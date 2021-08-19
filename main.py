@@ -82,10 +82,12 @@ def scan_data(datapath):
     nd2Locations = list(scantree(datapath))
     return sorted(nd2Locations, key=lambda s: os.path.basename(s),reverse=True)
 
-def match_scans(folder):
+def match_scans(folder,groupby=(0,2)):
     nd2Files = list(glob.glob(folder+os.sep+'*.nd2'))
+    if groupby is None:
+        return [(os.path.split(file)[1].replace(' ','').upper(),[(i,os.path.split(file)[1].replace(' ','').upper(),file)]) for i, file in enumerate(nd2Files)]
     nd2Filenames = [(i,r.split(r'-|_|\.',os.path.split(file)[1].replace(' ','').upper()),file) for i, file in enumerate(nd2Files)]
-    grouped = it.groupby(nd2Filenames,key=lambda x: x[1][:2])
+    grouped = it.groupby(nd2Filenames,key=lambda x: x[1][groupby[0]:groupby[1]])
     return grouped
 
 def set_axes_to_iterate(images):
@@ -119,7 +121,7 @@ def resolve_channels(channels):
                         '488':'b',
                         '405':'b'}
     return cmap
-    
+
 ##Data functions
 normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
@@ -202,7 +204,7 @@ def set_plot(framesize,n):
         figsize = (framesize[1]*ncols/ppi,(framesize[0]/ppi)*(1/.9))
 
     fig = plt.figure(dpi=ppi,figsize=figsize)
-    gs = mpl.pyplot.GridSpec(ncols=ncols, nrows=nrows,wspace=0.02,hspace=0.02)
+    gs = mpl.pyplot.GridSpec(ncols=ncols, nrows=nrows,wspace=0.01,hspace=0.01)
     l, t, r, b = 0, .9, 1, 0 
     gs.update(left=l, top=t, right=r, bottom=b)
     return fig,gs
@@ -224,10 +226,9 @@ def show_frame(frame,ax):
 
 def calc_fontsize(frameshape):
     subplot_size =(frameshape[1]/ppi,frameshape[0]/ppi)
-    # maxdim = max(subplot_size)*72
     normalizing_dim = subplot_size[1]*72
     fontsize = int(round(normalizing_dim*0.06))
-    print(f"ScanDimensions: {frameshape[1]}x{frameshape[0]}\nFigDimensions: {subplot_size[0]}x{subplot_size[1]}\nFontsize: {fontsize}")
+    print(f"ScanDimensions: {frameshape[1]}x{frameshape[0]}px\nFigDimensions: {subplot_size[0]:.02f}x{subplot_size[1]:.02f}in.\nFontsize: {fontsize}pt")
     return fontsize
 
 def rainbow_text(x,y,ls,lc,ax,**kw):
@@ -256,31 +257,40 @@ def save_fig(fig,f):
 
 
     
-def main(directory):
-
+def main(directory,clear=True,groupby=(0,2)):
+    fig_ext = '.png'
 
     foldersWithData = scan_data(directory)
+
     ##Clear previous results
-    # [create_folders(folder,export_flags,clear=True) for folder in foldersWithData]
     if compile_all:
-        raw_path,proj_path, fig_path = create_folders(directory,export_flags,clear=True)
+        raw_path,proj_path, fig_path = create_folders(directory,export_flags,clear=clear)
+    elif clear:
+        [create_folders(folder,export_flags,clear=True) for folder in foldersWithData]
+
+    folder_count = 0
     for folder in foldersWithData:
+        folder_count+=1
+
         if not compile_all:
             raw_path,proj_path, fig_path = create_folders(folder,export_flags)
-
-        file_groups = match_scans(folder)
-        fig_ext = '.png'
+        file_groups = match_scans(folder,groupby = groupby)
         print('--'*10)
-        print(folder)
+        print('--'*10)
+        print(f'Folder {folder_count}:\n{folder}')
+        print('--'*10)
+        sample_count = 0
         for sample_id,grouped_images in file_groups:
-            print(sample_id)
-            outname = "_".join(sample_id)
-            fig_outname = f'{fig_path}{os.sep}{"_".join(sample_id)}{fig_ext}'
+            sample_count+=1
+            if groupby is None:
+                outname = sample_id
+            else:
+                outname = "_".join(sample_id)
+            print(f'\nSample {sample_count}: {outname}\n')
+            fig_outname = f'{fig_path}{os.sep}{outname}{fig_ext}'
             
             collected_channels_dicts = []
             for i,pattern,f in grouped_images:
-                path,filename = os.path.split(f)
-                outname= filename[:-4]
                 with ND2Reader(f) as images:
                     channels = images.metadata['channels']
                     numChannels = len(channels)
@@ -292,6 +302,9 @@ def main(directory):
             metadata, channels_dict = merge_files(collected_channels_dicts)
 
             channels = list(channels_dict.keys())
+            print('Recognized Channels:')
+            [print(f"{x}nm") for x in channels]
+            print('')
             channel_to_color = resolve_channels(channels)
             num_subplots = len(channels)
             if num_subplots>1:
@@ -361,20 +374,27 @@ if __name__=='__main__':
     create_fig = True
     compile_all = True
 
-    export_flags = {'raw':False,
+    export_flags = {
+                    'raw':False,
                     'proj':True,
-                    'figure':True}
-    channel_to_protein = {'405':'DAPI',
-            '488':'ACAN',
-            '550':'ACAN',
-            '640':'pACAN'}
-    channel_to_proj_map = {'405':'max',
-                        '488':'mean',
-                        '550':'mean',
-                        '640':'mean'
+                    'figure':True
+                    }
+
+    channel_to_protein = {
+                        '405':'DAPI',
+                        '488':'ACAN',
+                        '550':'ACAN',
+                        '640':'pACAN'
                         }
 
-    main(directory)
+    channel_to_proj_map = {
+                            '405':'max',
+                            '488':'mean',
+                            '550':'mean',
+                            '640':'mean'
+                            }
+
+    main(directory,clear=True,groupby=(0,2))
     
 
 
