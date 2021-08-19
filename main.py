@@ -1,7 +1,7 @@
 from nd2reader import ND2Reader
 import matplotlib as mpl
 mpl.use("Agg")
-# mpl.use("Qt5Agg")
+#mpl.use("Qt5Agg")
 import matplotlib.pyplot as plt
 import glob,os
 import numpy as np
@@ -14,6 +14,7 @@ import re as r
 from matplotlib import transforms
 import itertools as it
 from skimage import restoration
+import imageio
 
 """
 Recursively crawl parent directory,
@@ -33,32 +34,29 @@ dispPPI = ppi*0.75
 
 ##Data retrieval/organization
 
-def create_folders(folder,clear=False):
-    projection_path = f"{folder}{os.sep}16bitProjections"
-    figure_path = f"{folder}{os.sep}Figures"
-    try:
-        os.mkdir(projection_path)
-    except FileExistsError:
-        if clear:
-            for file in os.scandir(projection_path):
-                os.remove(file.path)
-        else:
-            pass
-    except Exception as e:
-        print(e)
-        pass
-    try:
-        os.mkdir(figure_path)
-    except FileExistsError:
-        if clear:
-            for file in os.scandir(figure_path):
-                os.remove(file.path)
-        else:
-            pass
-    except Exception as e:
-        print(e)
-        pass
-    return projection_path, figure_path
+def create_folders(folder,export_flags,clear=False):
+    paths = {
+        'raw':(export_flags['raw'],f"{folder}{os.sep}RawTifStacks"),
+        'proj':(export_flags['proj'],f"{folder}{os.sep}16bitProjections"),
+        'figure':(export_flags['figure'],f"{folder}{os.sep}Figures")
+    }
+    paths_out = []
+    for type,(use,p) in paths.items():
+        paths_out.append(p)
+        if use:
+            try:
+                os.mkdir(p)
+            except FileExistsError:
+                if clear:
+                    for file in os.scandir(p):
+                        os.remove(file.path)
+                else:
+                    pass
+            except Exception as e:
+                print(e)
+                pass
+
+    return paths_out
 
 def scantree(p):
     yielded = set()
@@ -108,7 +106,23 @@ def merge_files(collected_channels_dicts):
         collected_meta.append([m])
     return (collected_meta, merged)
 
+def resolve_channels(channels):
+    cmap = {"640":'r',
+                        '550':'r',
+                        '488':'g',
+                        '405':'b'}
+    if len(channels)>3:
+        raise ValueError('More then 3 color channels not supported for creating composite images')
+    if ('550' in channels)&('640' in channels):
+        cmap = {"640":'r',
+                        '550':'g',
+                        '488':'b',
+                        '405':'b'}
+    return cmap
+    
 ##Data functions
+normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
 def framestack_to_vol(framestack):
     volume_shape = (len(framestack),framestack[0].shape[0],framestack[0].shape[1])
     vol = np.empty(volume_shape,dtype=np.uint16)
@@ -119,48 +133,50 @@ def framestack_to_vol(framestack):
 def plot_result(image, background):
     fig, ax = plt.subplots(nrows=1, ncols=3)
 
-    ax[0].imshow(image, cmap='gray')
-    ax[0].set_title('Original image')
+    ax[0].imshow(normalize_frame(background), cmap='Greens')
+    ax[0].set_title('Background')
     ax[0].axis('off')
 
-    ax[1].imshow(background, cmap='gray')
-    ax[1].set_title('Background')
+    ax[1].imshow(normalize_frame(image), cmap='Greens')
+    ax[1].set_title('Original image')
     ax[1].axis('off')
 
-    ax[2].imshow(image - background, cmap='gray')
+
+    ax[2].imshow(normalize_frame(image - background), cmap='Greens')
     ax[2].set_title('Result')
     ax[2].axis('off')
 
     fig.tight_layout()
 
 def filter_vol(vol):
-    rad = 1
-    # normalized_radius = rad / pow(2,16)
+    radz = 5
+    radxy = 5
     background = restoration.rolling_ball(
                                             vol,
                                             kernel=restoration.ellipsoid_kernel(
-                                                (vol.shape[0], 1, 1),
-                                                rad*2
-                                                )
+                                                (1, radxy*2, radxy*2),
+                                                radxy*2
+                                                ),
+                                            nansafe=True
                                             )
-    # for i in range(vol.shape[0]):
-    #     plot_result(vol[i, :,:], background[i, :,:])
-    #     plt.show()
+    for i in range(vol.shape[0]):
+        plot_result(vol[i, :,:], background[i, :,:])
+        plt.show()
     return vol-background
 
 def get_projection(framestack,method='mean'):
     meth_map = {'mean':lambda x: np.nanmean(x[0:,:,:],axis=0,dtype=np.uint16),
             'med':lambda x: np.nanmedian(x[0:,:,:],axis=0),
-            'max':lambda x: np.nanmax(x[0:,:,:],axis=0,dtype=np.uint16),
+            'max':lambda x: np.nanmax(x[0:,:,:],axis=0),
             'sum':lambda x: np.nansum(x[0:,:,:],axis=0,dtype=np.uint16)
     }
     vol = framestack_to_vol(framestack)
-    vol = filter_vol(vol)
+    #vol = filter_vol(vol)
     VIP = meth_map[method](vol)
     return VIP
 
 def gray_to_color(frame,color='g'):
-    cmap = {"640":-2,'488':-1,'405':0}
+    cmap = {"r":-2,'g':-1,'b':0}
     dst = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
     dst[:,:,:2] = 0
     dst = np.roll(dst,cmap[color],axis=2)
@@ -174,17 +190,29 @@ def make_composite(cframes):
     return result
 
 ##Plotting Functions
-normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
-def set_plot(figsize,ncols):
-    fig = plt.figure(dpi=ppi,figsize=(figsize[1]*ncols/ppi,(figsize[0]/ppi)*(1/.9)))
-    gs = mpl.pyplot.GridSpec(ncols=ncols, nrows=1,wspace=0.02)
+def set_plot(framesize,n):
+    if framesize[1]>framesize[0]:
+        ncols = 1
+        nrows = n
+        figsize = (framesize[1]/ppi,(framesize[0]*nrows/ppi)*(1/.9))
+    else:
+        ncols = n
+        nrows = 1
+        figsize = (framesize[1]*ncols/ppi,(framesize[0]/ppi)*(1/.9))
+
+    fig = plt.figure(dpi=ppi,figsize=figsize)
+    gs = mpl.pyplot.GridSpec(ncols=ncols, nrows=nrows,wspace=0.02,hspace=0.02)
     l, t, r, b = 0, .9, 1, 0 
     gs.update(left=l, top=t, right=r, bottom=b)
     return fig,gs
 
 def yield_subplot(col,fig,gs):
-    ax1 = fig.add_subplot(gs[0,col])
+    try:
+        ax1 = fig.add_subplot(gs[0,col])
+    except:
+        ax1 = fig.add_subplot(gs[col,0])
+        
     ax1.axis('off')
     return ax1
 
@@ -227,31 +255,19 @@ def save_fig(fig,f):
             pass
 
 
-stainMap = {'405':'DAPI',
-            '488':'ACAN',
-            '640':'pACAN'}
-wavelength_to_color = {"640":'r','488':'g','405':'b'}
+    
+def main(directory):
 
-# def main(filter=True):
-
-
-
-if __name__=='__main__':
-    laptop = r'C:\Users\dillo'
-    desktop = r'D:'
-    directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
-    export_data = True
-    export_figures = True
-    compile = True
 
     foldersWithData = scan_data(directory)
     ##Clear previous results
-    # [create_folders(folder,clear=True) for folder in foldersWithData]
-
+    # [create_folders(folder,export_flags,clear=True) for folder in foldersWithData]
+    if compile_all:
+        raw_path,proj_path, fig_path = create_folders(directory,export_flags,clear=True)
     for folder in foldersWithData:
-        proj_path, fig_path = create_folders(folder)
-        if compile:
-            proj_path, fig_path = create_folders(directory)
+        if not compile_all:
+            raw_path,proj_path, fig_path = create_folders(folder,export_flags)
+
         file_groups = match_scans(folder)
         fig_ext = '.png'
         print('--'*10)
@@ -273,59 +289,93 @@ if __name__=='__main__':
                     for i,frame in enumerate(images):
                         channels_dict[channels[i%numChannels]].append(frame)
                 collected_channels_dicts.append((images.metadata, channels_dict))
-            
             metadata, channels_dict = merge_files(collected_channels_dicts)
-            num_subplots = len(channels_dict.keys())
+
+            channels = list(channels_dict.keys())
+            channel_to_color = resolve_channels(channels)
+            num_subplots = len(channels)
             if num_subplots>1:
                 num_subplots+=1
             
             framesize = frame.shape
             fig,gs = set_plot(framesize,num_subplots)
             fontsize = calc_fontsize(framesize)
-
-            fig.suptitle(outname)
+            fig.suptitle(outname,fontsize=fontsize)
             color_frames = []
+
             named_channels = list(channels_dict.items())
-            channels = []
             named_channels.sort(key=lambda x: x[0],reverse=True)
             for i,(c,fstack) in enumerate(named_channels):
-                channels.append(c)
-                proj = get_projection(fstack)
-                if export_data == True:
-                    write_proj(proj,proj_path,f'{outname}-{c}nm')
+                projection_type = channel_to_proj_map[c]
+                channel_outname = f'{outname}-{c}nm-{projection_type.upper()}'
                 
-                ##Raw data to frames for display
-                ax = yield_subplot(i,fig,gs)
+                if export_flags['raw']==True:
+                    imageio.mimwrite(f'{raw_path}{os.sep}{channel_outname}.tiff',fstack)
+                if calc_proj:
+                    proj = get_projection(fstack,projection_type)
+                    if export_flags['proj'] == True:
+                        write_proj(proj,proj_path,channel_outname)
+                if create_fig:
+                    ##Raw data to frames for display
+                    ax = yield_subplot(i,fig,gs)
 
-                frame = normalize_frame(proj)
-                color_frame = gray_to_color(frame,c)
-                show_frame(color_frame, ax)
+                    frame = normalize_frame(proj)
+                    color_frame = gray_to_color(frame,channel_to_color[c])
+                    show_frame(color_frame, ax)
 
-                try:
-                    pixels_micron = metadata['pixel_microns']
-                except:
-                    pixels_micron = metadata[0]['pixel_microns']
+                    try:
+                        pixels_micron = metadata['pixel_microns']
+                    except:
+                        pixels_micron = metadata[0]['pixel_microns']
 
-                if i==0:
-                    scalebar = ScaleBar(pixels_micron,'um',frameon=True,location='lower right',
-                                        box_color=(1, 1, 1),box_alpha = 0,color='white',
-                                        font_properties = {'size':int(round(fontsize/2))})
-                    ax.add_artist(scalebar)
-                rainbow_text(0.03,.02,[stainMap[c]],[wavelength_to_color[c]],size=fontsize,ax=ax)
-                color_frames.append(color_frame)
+                    if i==0:
+                        scalebar = ScaleBar(pixels_micron,'um',frameon=True,location='lower right',
+                                            box_color=(1, 1, 1),box_alpha = 0,color='white',
+                                            font_properties = {'size':int(round(fontsize/2))})
+                        ax.add_artist(scalebar)
+                if create_fig:
+                    rainbow_text(0.03,.02,[channel_to_protein[c]],[channel_to_color[c]],size=fontsize,ax=ax)
+                    color_frames.append(color_frame)
 
-            if len(color_frames)>1:
+            if (len(color_frames)>1)&(create_fig):
                 ax = yield_subplot(num_subplots-1,fig,gs)
                 composite = make_composite(color_frames)
                 if composite is None:
                     continue
                 show_frame(composite, ax)
-                rainbow_text(0.03,.02,[stainMap[x] for x in channels],[wavelength_to_color[x] for x in channels],size=fontsize,ax=ax)
-            if export_figures == True:
-                save_fig(fig,fig_outname)
+                rainbow_text(0.03,.02,[channel_to_protein[x] for x in channels],[channel_to_color[x] for x in channels],size=fontsize,ax=ax)
+            if create_fig:
             # plt.show()
+                if export_flags['figure']:
+                    save_fig(fig,fig_outname)
 
             plt.close()
+
+
+if __name__=='__main__':
+    laptop = r'C:\Users\dillo'
+    desktop = r'D:'
+    directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
+    
+    calc_proj = True
+    create_fig = True
+    compile_all = True
+
+    export_flags = {'raw':False,
+                    'proj':True,
+                    'figure':True}
+    channel_to_protein = {'405':'DAPI',
+            '488':'ACAN',
+            '550':'ACAN',
+            '640':'pACAN'}
+    channel_to_proj_map = {'405':'max',
+                        '488':'mean',
+                        '550':'mean',
+                        '640':'mean'
+                        }
+
+    main(directory)
+    
 
 
 
