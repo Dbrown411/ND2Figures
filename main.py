@@ -12,6 +12,16 @@ from matplotlib_scalebar.scalebar import ScaleBar
 import re as r
 from matplotlib import transforms
 import itertools as it
+"""
+Recursively crawl parent directory,
+find all .nd2 file types,
+groupby (ID1,ID2) from file name using naming convention
+
+    "ID1{-|_|.}ID2{-|_|.}ADDITIONAL.nd2"
+
+"""
+
+
 
 app = wx.App(False) # the wx.App object must be created first.    
 ppi = wx.Display().GetPPI()[0]
@@ -25,10 +35,12 @@ def rainbow_text(x,y,ls,lc,ax,**kw):
 
     #horizontal version
     for i,b in enumerate(zip(ls,lc)):
+        print(i)
         s,c = b
+        print(s)
         if i>0:
-            x=0
-        text = plt.text(x,y," "+s+" ",color=c, transform=t, ha='left', va='bottom',**kw)
+            x=0.08
+        text = plt.text(x,y,' '+s,color=c, transform=t, ha='left', va='bottom',**kw)
         text.draw(fig.canvas.get_renderer())
         ex = text.get_window_extent()
         t = transforms.offset_copy(text._transform, x=ex.width, units='dots')
@@ -63,7 +75,14 @@ def write_proj(fig,path,filename,ext='.tif'):
     cv2.imwrite(f"{path}{os.sep}{filename}{ext}", fig)
 
 def save_fig(fig,f):
-    fig.savefig(f, dpi=ppi)
+    try:
+        fig.savefig(f, dpi=ppi)
+    except:
+        try:
+            fig.savefig(f'{f}-01', dpi=ppi)
+        except Exception as e:
+            print(e)
+            pass
 
 def gray_to_color(frame,color='g'):
     cmap = {"640":-2,'488':-1,'405':0}
@@ -86,6 +105,8 @@ def yield_subplot(col,fig,gs):
 
 def show_frame(frame,ax):
     interp='hermite'
+    if frame is None:
+        return
     ax.imshow(frame,interpolation=interp,vmin=0, vmax=255, aspect='equal') 
 
 def create_folders(folder):
@@ -127,7 +148,7 @@ def scan_data(datapath):
 
 def match_scans(folder):
     nd2Files = list(glob.glob(folder+os.sep+'*.nd2'))
-    nd2Filenames = [(i,r.split(r'-|_|\.',os.path.split(file)[1].replace(' ','').upper())) for i, file in enumerate(nd2Files)]
+    nd2Filenames = [(i,r.split(r'-|_|\.',os.path.split(file)[1].replace(' ','').upper()),file) for i, file in enumerate(nd2Files)]
     grouped = it.groupby(nd2Filenames,key=lambda x: x[1][:2])
     return grouped
 
@@ -139,63 +160,103 @@ def set_axes_to_iterate(images):
         iteraxes.append('c')
     images.iter_axes = iteraxes
 
+def merge_files(collected_channels_dicts):
+    collected_channels_dicts.sort(key=lambda x: len(x[1]))
+    merged = collected_channels_dicts.pop(0)
+    meta1,merged = merged
+    collected_meta = [meta1]
+    for m,d in collected_channels_dicts:
+        merged.update(d)
+        collected_meta.append([m])
+    return (collected_meta, merged)
+
+
+def make_composite(cframes):
+    shapes = [x.shape for x in cframes]
+    if len(set(shapes)) > 1:
+        return None
+    result = np.nansum(np.stack(cframes),axis=0)
+    return result
+
+
 stainMap = {'405':'DAPI',
             '488':'ACAN',
             '640':'pACAN'}
 wavelength_to_color = {"640":'r','488':'g','405':'b'}
+
+
+
 if __name__=='__main__':
-    system_specific = r'C:\Users\dillo'
-    directory = rf"{system_specific}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
+    laptop = r'C:\Users\dillo'
+    desktop = r'D:'
+    directory = rf"{desktop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
     normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
     foldersWithData = scan_data(directory)
-    # foldersWithData=[foldersWithData[0]]
     for folder in foldersWithData:
         proj_path, fig_path = create_folders(folder)
-        # print(folder)
         file_groups = match_scans(folder)
-        # file_groups = None
-        for file_group in file_groups:
-            for f in file_group:
+        fig_ext = '.png'
+        fontsize = 50
+        print('--'*10)
+        print(folder)
+        for sample_id,grouped_images in file_groups:
+            print(sample_id)
+            outname = "_".join(sample_id)
+            fig_outname = f'{fig_path}{os.sep}{"_".join(sample_id)}{fig_ext}'
+            
+            collected_channels_dicts = []
+            for i,pattern,f in grouped_images:
                 path,filename = os.path.split(f)
                 outname= filename[:-4]
-                out_ext = '.tif'
                 with ND2Reader(f) as images:
                     channels = images.metadata['channels']
                     numChannels = len(channels)
                     set_axes_to_iterate(images)
-                    scalebar = ScaleBar(images.metadata['pixel_microns'],'um',frameon=True,location='lower right',box_color=(1, 1, 1),box_alpha = 0,color='white',fontsize=18)
-                    channels_dict = {i:[] for i in range(numChannels)}
+                    channels_dict = {channels[i]:[] for i in range(numChannels)}
                     for i,frame in enumerate(images):
-                        channels_dict[i%numChannels].append(frame)
-                        framesize = frame.shape
+                        channels_dict[channels[i%numChannels]].append(frame)
+                collected_channels_dicts.append((images.metadata, channels_dict))
+            
+            metadata, channels_dict = merge_files(collected_channels_dicts)
+            num_subplots = len(channels_dict.keys())
+            if num_subplots>1:
+                num_subplots+=1
+            
+            framesize = frame.shape
+            fig,gs = set_plot(framesize,num_subplots)
+            fig.suptitle(outname)
+            color_frames = []
+            named_channels = list(channels_dict.items())
+            channels = []
+            named_channels.sort(key=lambda x: x[0],reverse=True)
+            for i,(c,fstack) in enumerate(named_channels):
+                channels.append(c)
+                ax = yield_subplot(i,fig,gs)
+                proj = get_projection(fstack)
+                try:
+                    pixels_micron = metadata['pixel_microns']
+                except:
+                    pixels_micron = metadata[0]['pixel_microns']
+                scalebar = ScaleBar(pixels_micron,'um',frameon=True,location='lower right',box_color=(1, 1, 1),box_alpha = 0,color='white',font_properties = {'size':fontsize/2})
 
-                    num_subplots = len(channels_dict.keys())
-                    if num_subplots>1:
-                        num_subplots+=1
-
-                    fig,gs = set_plot(framesize,num_subplots)
-                    fig.suptitle(filename[:-4])
-                    color_frames = []
-                    for k,fstack in channels_dict.items():
-                        ax = yield_subplot(k,fig,gs)
-                        proj = get_projection(fstack)
-
-                        frame = normalize_frame(proj)
-                        color_frame = gray_to_color(frame,channels[k])
-                        show_frame(color_frame, ax)
-                        if k==0:
-                            ax.add_artist(scalebar)
-                        ax.text(0.03,.02,stainMap[channels[k]],ha='left',va='bottom',color=wavelength_to_color[channels[k]],transform=ax.transAxes,size=30)
-                        write_proj(proj,proj_path,f'{outname}-{channels[k]}nm')
-                        color_frames.append(color_frame)
-                    if len(color_frames)>1:
-                        ax = yield_subplot(num_subplots-1,fig,gs)
-                        show_frame(np.nansum(np.asarray(color_frames),axis=0), ax)
-                        rainbow_text(0.03,.02,[stainMap[x] for x in channels],[wavelength_to_color[x] for x in channels],size=30,ax=ax)
-                plt.show()
-                figname = rf"{fig_path}{os.sep}{outname}-Compiled{out_ext}"
-                save_fig(fig,figname)
-                plt.close()
+                frame = normalize_frame(proj)
+                color_frame = gray_to_color(frame,c)
+                show_frame(color_frame, ax)
+                if i==0:
+                    ax.add_artist(scalebar)
+                ax.text(0.03,.02,stainMap[c],ha='left',va='bottom',color=wavelength_to_color[c],transform=ax.transAxes,size=fontsize)
+                write_proj(proj,proj_path,f'{outname}-{c}nm')
+                color_frames.append(color_frame)
+            if len(color_frames)>1:
+                ax = yield_subplot(num_subplots-1,fig,gs)
+                composite = make_composite(color_frames)
+                if composite is None:
+                    continue
+                show_frame(composite, ax)
+                rainbow_text(0.03,.02,[stainMap[x] for x in channels],[wavelength_to_color[x] for x in channels],size=fontsize,ax=ax)
+            # plt.show()
+            save_fig(fig,fig_outname)
+            plt.close()
 
 
 
