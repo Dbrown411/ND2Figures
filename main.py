@@ -3,23 +3,17 @@
 Version 1
 Dillon Brown, 19Aug2021
 """
+from plotting import *
+import glob,os,argparse, json
+import re as r
+import itertools as it
 from nd2reader import ND2Reader
-import matplotlib as mpl
-# mpl.use("Agg")
-mpl.use("Qt5Agg")
-import matplotlib.pyplot as plt
-import glob,os,argparse
+import imageio
 import numpy as np
 import cv2 as cv2
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-from matplotlib.backend_bases import FigureCanvasBase as FigureCanvas
-import wx
-from matplotlib_scalebar.scalebar import ScaleBar
-import re as r
-from matplotlib import transforms
-import itertools as it
 from skimage import restoration
-import imageio
+
+from matplotlib_scalebar.scalebar import ScaleBar
 
 """
 Functions/Use
@@ -36,7 +30,7 @@ Functions/Use
                     -By default assumes DAPI as 405nm
                     and creates a maximum intensity projection for more visible
                     counterstain
-                    -other hardcoded channels (480nm,550nm,640nm) will be 
+                    -other hardcoded channels (480nm,561nm,640nm) will be 
                     mean intensity projections more suitable for quantification
 
 4) (Optional) Convert projections to normalized 8bit RGB images,
@@ -54,10 +48,6 @@ Functions/Use
 """
 
 
-
-app = wx.App(False) # the wx.App object must be created first.    
-ppi = wx.Display().GetPPI()[0]
-dispPPI = ppi*0.75
 
 
 ##Data retrieval/organization
@@ -118,69 +108,8 @@ def match_scans(folder,groupby=(0,2)):
     grouped = it.groupby(nd2Filenames,key=lambda x: x[1][groupby[0]:groupby[1]])
     return grouped
 
-def set_axes_to_iterate(images):
-    iteraxes = []
-    if int(images.metadata['total_images_per_channel'])>1:
-        iteraxes.append('z')
-    if len(images.metadata['channels'])>1:
-        iteraxes.append('c')
-    images.iter_axes = iteraxes
-
-def merge_files(collected_channels_dicts):
-    collected_channels_dicts.sort(key=lambda x: len(x[1]))
-    merged = collected_channels_dicts.pop(0)
-    meta1,merged = merged
-    collected_meta = [meta1]
-    for m,d in collected_channels_dicts:
-        merged.update(d)
-        collected_meta.append([m])
-    return (collected_meta, merged)
-
-def resolve_channels(channels):
-    cmap = {"640":'r',
-                        '550':'r',
-                        '488':'g',
-                        '405':'b'}
-    if len(channels)>3:
-        raise ValueError('More then 3 color channels not supported for creating composite images')
-    if ('550' in channels)&('640' in channels):
-        cmap = {
-                "640":'r',
-                '550':'g',
-                '488':'b',
-                '405':'b'}
-    return cmap
-
-def get_exportnames_from_file(pattern,identify,groupby):
-    fig_ext = '.png'
-    identifier_slice = identify if identify is not None else groupby if groupby is not None else (0,-1)
-    sample_id = pattern[identifier_slice[0]:identifier_slice[1]]
-    outname = "_".join(sample_id)
-    fig_localoutname = f'{outname}{fig_ext}'
-    return outname, fig_localoutname
-
-def merge_nd2_to_dict(grouped_images,identify,groupby):
-    collected_channels_dicts = []
-    for i,(_,pattern,f) in enumerate(grouped_images):
-        print(i,pattern,f)
-        if i==0:
-            outname, fig_localoutname = get_exportnames_from_file(pattern,identify,groupby)
-            metadata = (outname,fig_localoutname)
-
-        with ND2Reader(f) as images:
-            channels = images.metadata['channels']
-            numChannels = len(channels)
-            set_axes_to_iterate(images)
-            channels_dict = {channels[i]:[] for i in range(numChannels)}
-            for k,frame in enumerate(images):
-                channels_dict[channels[k%numChannels]].append(frame)
-        collected_channels_dicts.append((images.metadata, channels_dict))
-    tagged_collection = {'metadata':metadata,'data':collected_channels_dicts}
-    
-    return tagged_collection
 
 ##Data functions (operating on u16)
-normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
 def framestack_to_vol(framestack):
     volume_shape = (len(framestack),framestack[0].shape[0],framestack[0].shape[1])
@@ -197,6 +126,7 @@ def get_projection(vol,method='mean'):
     }
     return meth_map[method](vol)
 
+=======
 def plot_result(image, background):
     fig, ax = plt.subplots(nrows=1, ncols=3)
 
@@ -238,7 +168,10 @@ def offset_projection(proj,new_0):
     newImage = np.array(original - new_0)
     newImage = newImage.clip(min=0)
     offset_proj = cv2.normalize(newImage, None, 0, newmax16, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
+<<<<<<< HEAD
     return offset_proj
+=======
+>>>>>>> c72a5530002022d04ff18b88660375ad50fe1a95
 
 
 def identify_foreground(img):
@@ -251,6 +184,7 @@ def identify_foreground(img):
     return th4
 
 ##Main data analysis pipeline
+<<<<<<< HEAD
 def analyze_fstack(vol,proj_type,calc_proj):
     if not calc_proj:
         return
@@ -357,12 +291,179 @@ def save_fig(fig,f):
         try:
             fig.savefig(f'{f}-01')
         except Exception as e:
+=======
+        return
+>>>>>>> c72a5530002022d04ff18b88660375ad50fe1a95
+
+    proj = get_projection(vol,proj_type)
+    frame = normalize_frame(proj)
+
+    mask = identify_foreground(frame)
+    foreground = cv2.bitwise_and(frame, mask)
+    mask = cv2.bitwise_not(mask)
+    display_background = cv2.bitwise_and(frame, mask)
+
+    mask16 = cv2.normalize(mask, None, 0, 65535, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
+    background = cv2.bitwise_and(proj, mask16)
+    mean_background = np.mean(background)
+    offset = int(round(mean_background))
+    if proj_type=='MAX':
+        offset*=2
+    offset_proj  = offset_projection(proj,offset)
+    return offset_proj, (foreground,display_background)
+
+
+class ND2Accumulator:
+    def __init__(self,group=None,identify=None,groupby=None):
+        self._set_defaults()
+        self.identify = identify
+        self.groupby = groupby
+        self.named_channels = {}
+        if group is not None:
+            self.group = group
+
+    ##Defaults/updating functions for mapping channels to proteins/colors
+    def _set_defaults(self):
+        self.channel_to_protein = {
+                        '405':'DAPI',
+                        '488':'488',
+                        '561':'561',
+                        '640':'640'
+                        }
+        self.channel_to_color = {
+                        "640":'r',
+                        '561':'r',
+                        '488':'g',
+                        '405':'b'
+                        }  
+
+    def get_exportnames_from_file(self,pattern):
+        identifier_slice = self.identify if self.identify is not None else self.groupby if self.groupby is not None else (0,-1)
+        sample_id = pattern[identifier_slice[0]:identifier_slice[1]]
+        self.outname = "_".join(sample_id)
+
+    def merge_nd2_to_dict(self,grouped_images):
+        def set_axes_to_iterate(images):
+            iteraxes = []
+            if int(images.metadata['total_images_per_channel'])>1:
+                iteraxes.append('z')
+            if len(images.metadata['channels'])>1:
+                iteraxes.append('c')
+            images.iter_axes = iteraxes
+
+        collected_channels_dicts = []
+        for i,(_,pattern,f) in enumerate(grouped_images):
+            print(i,pattern,f)
+            if i==0:
+                self.get_exportnames_from_file(pattern)
+
+            with ND2Reader(f) as images:
+                channels = images.metadata['channels']
+                numChannels = len(channels)
+                set_axes_to_iterate(images)
+                channels_dict = {channels[i]:[] for i in range(numChannels)}
+                for k,frame in enumerate(images):
+                    channels_dict[channels[k%numChannels]].append(frame)
+            collected_channels_dicts.append((images.metadata, channels_dict))
+        return collected_channels_dicts
+
+    def merge_files(self,collected_channels_dicts):
+        collected_channels_dicts.sort(key=lambda x: len(x[1]))
+        merged = collected_channels_dicts.pop(0)
+        meta1,merged = merged
+        collected_meta = [meta1]
+        for m,d in collected_channels_dicts:
+            merged.update(d)
+            collected_meta.append([m])
+        return (collected_meta, merged)
+
+    def set_group(self,grouped_images):
+        collected_channels_dicts = self.merge_nd2_to_dict(grouped_images)
+        
+        ##get collection of data and merge
+        metadata, channels_dict = self.merge_files(collected_channels_dicts)
+        c,first_channel = next(iter((channels_dict.items())))
+        self.framesize = first_channel[0].shape
+
+        channels = list(channels_dict.keys())
+        channels.sort(reverse=True)
+        self.channels = channels
+        self.named_channels = list(channels_dict.items())
+        self.named_channels.sort(key=lambda x: x[0],reverse=True)
+        print('Recognized Channels:')
+        [print(f"{x}nm") for x in channels]
+        print('')
+
+  
+    @property
+    def group(self):
+        return self.named_channels
+    @group.setter
+    def group(self,grouped_images):
+        if grouped_images is None:
+            return
+        self.set_group(grouped_images)
+        
+    @property
+    def identify(self):
+        return self._identify
+    @identify.setter
+    def identify(self,arr_slice):
+        self._identify = arr_slice
+
+    @property
+    def groupby(self):
+        return self._groupby
+    @groupby.setter
+    def groupby(self,arr_slice):
+        self._groupby = arr_slice
+
+    @property
+    def folder(self):
+        return self._folder
+    @folder.setter
+    def folder(self,folder):
+        self._folder = folder
+        self.get_channelmap(folder)
+    
+    @property
+    def channels(self):
+        return self._channels
+    @channels.setter
+    def channels(self,channels):
+        self._channels = channels
+        self.resolve_channels()
+
+    def get_channelmap(self,folder):
+        path_to_config = _check_all_folders_in_path(folder)
+        if path_to_config is None:
+            try:
+                with open('default_channelmap.txt','r') as f:
+                    self.channel_to_protein = json.load(f)
+            except:
+                pass
+        else:
+            with open(path_to_config,'r') as f:
+                self.channel_to_protein = json.load(f)
             print(e)
+    def resolve_channels(self):
+        if len(self.channels)>3:
+            raise ValueError('More then 3 color channels not supported for creating composite images')
+        if ('561' in self.channels)&('640' in self.channels):
+            self.channel_to_color = {
+                                    "640":'r',
+                                    '561':'g',
+                                    '488':'b',
+                                    '405':'b'
+                                    }
             pass
+    def write_proj(fig,path,filename,ext='.tif'):
+        cv2.imwrite(f"{path}{os.sep}{filename}{ext}", fig)
 
 
     
 def main(directory,clear=True,groupby=None,identify=None):
+    [print(folder) for folder in foldersWithData]
 
     foldersWithData = scan_data(directory)
 
@@ -371,6 +472,8 @@ def main(directory,clear=True,groupby=None,identify=None):
         raw_path,proj_path, fig_path = create_folders(directory,export_flags,clear=clear)
     elif clear:
         [create_folders(folder,export_flags,clear=True) for folder in foldersWithData]
+    plotter = ProjPlotter(disp=False)
+
 
     folder_count = 0
     for folder in foldersWithData:
@@ -385,36 +488,15 @@ def main(directory,clear=True,groupby=None,identify=None):
         print('--'*10)
 
         sample_count = 0
-        for group,grouped_images in file_groups:
-            sample_count+=1
-
-            tagged_data = merge_nd2_to_dict(grouped_images,identify,groupby)
-
-            ##get chosen sample identifer from tagged data
-            outname,fig_localoutname = tagged_data.pop('metadata')
-            fig_outname = f'{fig_path}{os.sep}{fig_localoutname}'
-            print(f'\nSample {sample_count}: {outname}\n')
-            
-            ##get collection of data and merge
-            collected_channels_dicts = tagged_data['data']
-            metadata, channels_dict = merge_files(collected_channels_dicts)
-            c,first_channel = next(iter((channels_dict.items())))
-
-            channels = list(channels_dict.keys())
-            channel_to_color = resolve_channels(channels)
+            groupedImages = ND2Accumulator(grouped_images,identify,groupby)
             named_channels = list(channels_dict.items())
-            named_channels.sort(key=lambda x: x[0],reverse=True)
-            
-            print('Recognized Channels:')
             [print(f"{x}nm") for x in channels]
             print('')
             
-            ##Data calculations
             
-            first_frame = first_channel[0]
 
-            ##Prepare plot
-            num_subplots = len(channels)
+            first_frame = first_channel[0]
+            plotter.set
             if num_subplots>1:
                 num_subplots+=1
             framesize = first_frame.shape
@@ -474,17 +556,43 @@ def main(directory,clear=True,groupby=None,identify=None):
 
             plt.close()
 
-
 if __name__=='__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--clear', help="Clear previous exports",
+    parser.add_argument('--show', help="show plots",
                                     default=False,
+                                    default=False,
+    parser.add_argument('--default', help="use default path",
+                                    default=False,
+                                    action='store_true')
+
+                                    action='store_true')                             
+
+    if args.show:
+        import matplotlib as mpl
+        mpl.use("Qt5Agg")
+    else:
+        import matplotlib as mpl
+        mpl.use("Agg")
+    import matplotlib.pyplot as plt
+
                                     action='store_true')                             
     args = parser.parse_args()
     
-    laptop = r'C:\Users\dillo'
-    desktop = r'D:'
+    directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
+    if not args.default:
+        from tkinter import filedialog
+        from tkinter import *
+        root = Tk()
+        root.withdraw()
+        curdir = f"{os.path.split(os.path.realpath(__file__))[0]}"
+        print(curdir)
+        folder_selected = filedialog.askdirectory(parent=root,
+                                  initialdir=curdir,
+                                  title='Select directory with .nd2 Files')
+        if folder_selected != '':
+            directory = folder_selected
     directory = rf"{desktop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
     
     calc_proj = True
@@ -497,15 +605,8 @@ if __name__=='__main__':
                     'figure':True
                     }
 
-    channel_to_protein = {
-                        '405':'DAPI',
-                        '488':'ACAN',
-                        '550':'ACAN',
-                        '640':'pACAN'
-                        }
-
     channel_to_proj_map = {
-                            '405':'max',
+                            '561':'mean',
                             '488':'mean',
                             '550':'mean',
                             '640':'mean'
