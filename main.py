@@ -3,7 +3,7 @@ import matplotlib as mpl
 mpl.use("Agg")
 #mpl.use("Qt5Agg")
 import matplotlib.pyplot as plt
-import glob,os
+import glob,os,argparse
 import numpy as np
 import cv2 as cv2
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
@@ -19,7 +19,7 @@ import imageio
 """
 Recursively crawl parent directory,
 find all .nd2 file types,
-groupby (ID1,ID2) from file name using naming convention
+optional groupby (ID1,ID2) from file name using naming convention
 
     "ID1{-|_|.}ID2{-|_|.}ADDITIONAL.nd2"
 
@@ -366,9 +366,16 @@ def main(directory,clear=True,groupby=(0,2)):
 
 
 if __name__=='__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--clear', help="Clear previous exports",
+                                    default=False,
+                                    action='store_true')                             
+    args = parser.parse_args()
+    
     laptop = r'C:\Users\dillo'
     desktop = r'D:'
-    directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
+    directory = rf"{desktop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
     
     calc_proj = True
     create_fig = True
@@ -394,7 +401,7 @@ if __name__=='__main__':
                             '640':'mean'
                             }
 
-    main(directory,clear=True,groupby=(0,2))
+    main(directory,clear=args.clear,groupby=(0,2))
     
 
 
