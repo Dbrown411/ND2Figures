@@ -3,7 +3,7 @@ import matplotlib as mpl
 mpl.use("Agg")
 #mpl.use("Qt5Agg")
 import matplotlib.pyplot as plt
-import glob,os
+import glob,os,json
 import numpy as np
 import cv2 as cv2
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
@@ -110,18 +110,39 @@ def merge_files(collected_channels_dicts):
 
 def resolve_channels(channels):
     cmap = {"640":'r',
-                        '550':'r',
+                        '561':'r',
                         '488':'g',
                         '405':'b'}
     if len(channels)>3:
         raise ValueError('More then 3 color channels not supported for creating composite images')
-    if ('550' in channels)&('640' in channels):
+    if ('561' in channels)&('640' in channels):
         cmap = {"640":'r',
-                        '550':'g',
+                        '561':'g',
                         '488':'b',
                         '405':'b'}
     return cmap
 
+def _check_all_folders_in_path(path):
+    path_to_config = f"{path}{os.sep}channelmap.txt"
+    if not os.path.isfile(path_to_config):
+        try:
+            _check_all_folders_in_path(os.path.split(path_to_config)[0])
+        except:
+            return None
+    else:
+        return path_to_config
+def get_channelmap(folder):
+    print(folder)
+    path_to_config = _check_all_folders_in_path(folder)
+    if path_to_config is None:
+        with open('default_channelmap.txt','r') as f:
+            channel_to_protein = json.load(f)
+    else:
+        with open(path_to_config,'r') as f:
+            channel_to_protein = json.load(f)
+
+    print(channel_to_protein)
+    return channel_to_protein
 ##Data functions
 normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
@@ -261,6 +282,7 @@ def main(directory,clear=True,groupby=(0,2)):
     fig_ext = '.png'
 
     foldersWithData = scan_data(directory)
+    [print(folder) for folder in foldersWithData]
 
     ##Clear previous results
     if compile_all:
@@ -306,6 +328,8 @@ def main(directory,clear=True,groupby=(0,2)):
             [print(f"{x}nm") for x in channels]
             print('')
             channel_to_color = resolve_channels(channels)
+            channel_to_protein = get_channelmap(folder)
+
             num_subplots = len(channels)
             if num_subplots>1:
                 num_subplots+=1
@@ -383,14 +407,15 @@ if __name__=='__main__':
     channel_to_protein = {
                         '405':'DAPI',
                         '488':'ACAN',
-                        '550':'ACAN',
+                        '561':'ACAN',
                         '640':'pACAN'
                         }
+
 
     channel_to_proj_map = {
                             '405':'max',
                             '488':'mean',
-                            '550':'mean',
+                            '561':'mean',
                             '640':'mean'
                             }
 
