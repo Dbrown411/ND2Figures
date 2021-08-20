@@ -503,17 +503,29 @@ def main(directory,clear=True,groupby=None,identify=None):
 
 
 if __name__=='__main__':
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--clear', help="Clear previous exports",
                                     default=False,
-                                    action='store_true')                             
+                                    action='store_true')   
+    parser.add_argument('--default', help="use default path",
+                                    default=False,
+                                    action='store_true')   
     args = parser.parse_args()
-    
     laptop = r'C:\Users\dillo'
     desktop = r'D:'
     directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
-    
+    if not args.default:
+        from tkinter import filedialog
+        from tkinter import *
+        root = Tk()
+        root.withdraw()
+        curdir = f"{os.path.split(os.path.realpath(__file__))[0]}"
+        print(curdir)
+        folder_selected = filedialog.askdirectory(parent=root,
+                                  initialdir=curdir,
+                                  title='Select directory with .nd2 Files')
+        if folder_selected != '':
+            directory = folder_selected
     calc_proj = True
     create_fig = True
     compile_all = True
