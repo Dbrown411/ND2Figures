@@ -189,18 +189,13 @@ def framestack_to_vol(framestack):
         vol[i,:,:] = frame
     return vol
 
-def get_projection(framestack,method='mean'):
+def get_projection(vol,method='mean'):
     meth_map = {'mean':lambda x: np.nanmean(x[0:,:,:],axis=0,dtype=np.uint16),
             'med':lambda x: np.nanmedian(x[0:,:,:],axis=0),
             'max':lambda x: np.nanmax(x[0:,:,:],axis=0),
             'sum':lambda x: np.nansum(x[0:,:,:],axis=0,dtype=np.uint16)
     }
-    vol = framestack_to_vol(framestack)
     return meth_map[method](vol)
-
-def analyze_fstack(fstack,proj_type):
-    proj = get_projection(fstack,proj_type)
-    return proj
 
 def plot_result(image, background):
     fig, ax = plt.subplots(nrows=1, ncols=3)
@@ -236,9 +231,46 @@ def filter_vol(vol):
         plt.show()
     return vol-background
 
-def threshold_proj(frame):
-    pass
+def offset_projection(proj,new_0):
+    original = np.array(proj, dtype=np.int32)
+    max16 = np.max(original)
+    newmax16 = max16-new_0
+    newImage = np.array(original - new_0)
+    newImage = newImage.clip(min=0)
+    offset_proj = cv2.normalize(newImage, None, 0, newmax16, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
+    return offset_proj
 
+
+def identify_foreground(img):
+    blur = cv2.GaussianBlur(img,(5,5),0)
+    ret3,th3 = cv2.threshold(blur,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    kernel = np.ones((5,5),np.uint8)    
+    th4 = cv2.dilate(th3,kernel,iterations = 5)
+    th4 = cv2.morphologyEx(th4, cv2.MORPH_CLOSE, kernel,iterations=10)
+    th4 = cv2.dilate(th4,kernel,iterations = 5*int(max(img.shape)/512))
+    return th4
+
+##Main data analysis pipeline
+def analyze_fstack(vol,proj_type,calc_proj):
+    if not calc_proj:
+        return
+
+    proj = get_projection(vol,proj_type)
+    frame = normalize_frame(proj)
+
+    mask = identify_foreground(frame)
+    foreground = cv2.bitwise_and(frame, mask)
+    mask = cv2.bitwise_not(mask)
+    display_background = cv2.bitwise_and(frame, mask)
+
+    mask16 = cv2.normalize(mask, None, 0, 65535, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
+    background = cv2.bitwise_and(proj, mask16)
+    mean_background = np.mean(background)
+    offset = int(round(mean_background))
+    if proj_type=='MAX':
+        offset*=2
+    offset_proj  = offset_projection(proj,offset)
+    return offset_proj, (foreground,display_background)
 
 ##Plotting Functions
 
@@ -282,7 +314,8 @@ def rainbow_text(x,y,ls,lc,ax,**kw):
     fig = plt.gcf()
     for i,b in enumerate(zip(ls,lc)):
         s,c = b
-        text = plt.text(x,y,s,color=c, transform=t,**kw)
+        text = plt.text(x,y,s,color=c, transform=t,**kw,zorder=len(ls)*2-i)
+        # text.set_backgroundcolor('w')
         text.draw(fig.canvas.get_renderer())
         ex = text.get_window_extent()
         t = transforms.offset_copy(text._transform, x=ex.width, units='dots')
@@ -395,18 +428,20 @@ def main(directory,clear=True,groupby=None,identify=None):
             for i,(c,fstack) in enumerate(named_channels):
                 projection_type = channel_to_proj_map[c]
                 channel_outname = f'{outname}-{c}nm-{projection_type.upper()}'
-                
                 if export_flags['raw']:
                     imageio.mimwrite(f'{raw_path}{os.sep}{channel_outname}.tiff',fstack)
+                vol = framestack_to_vol(fstack)
+                ##Point at which custom analysis code could be easily injected
+                ##Function should take a 3d np.vol of uint16 and return a 2d array for display
+                ##
+                proj, fgbg = analyze_fstack(vol,projection_type,calc_proj)
 
-                if calc_proj:
-                    proj = analyze_fstack(fstack,projection_type)
-                    if export_flags['proj']:
-                        write_proj(proj,proj_path,channel_outname)
 
+                if export_flags['proj']:
+                    write_proj(proj,proj_path,channel_outname)
                 if create_fig:
                     if not calc_proj:
-                        proj = analyze_fstack(fstack,projection_type)
+                        proj, fgbg = analyze_fstack(fstack,projection_type,calc_proj)
                     color_frame = projection_to_frame(proj,channel_to_color[c])
                     ax = yield_subplot(i,fig,gs)
                     show_frame(color_frame, ax)
@@ -433,7 +468,7 @@ def main(directory,clear=True,groupby=None,identify=None):
                 show_frame(composite, ax)
                 rainbow_text(0.03,.02,[channel_to_protein[x] for x in channels],[channel_to_color[x] for x in channels],size=fontsize,ax=ax)
             if create_fig:
-                plt.show()
+                # plt.show()
                 if export_flags['figure']:
                     save_fig(fig,fig_outname)
 
