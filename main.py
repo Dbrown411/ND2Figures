@@ -1,9 +1,14 @@
+## -*- coding: utf-8 -*-
+"""ND2Figures
+Version 1
+Dillon Brown, 19Aug2021
+"""
 from nd2reader import ND2Reader
 import matplotlib as mpl
 mpl.use("Agg")
 #mpl.use("Qt5Agg")
 import matplotlib.pyplot as plt
-import glob,os,json
+import glob,os,argparse, json
 import numpy as np
 import cv2 as cv2
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
@@ -17,15 +22,36 @@ from skimage import restoration
 import imageio
 
 """
-Recursively crawl parent directory,
-find all .nd2 file types,
-groupby (ID1,ID2) from file name using naming convention
+Functions/Use
 
-    "ID1{-|_|.}ID2{-|_|.}ADDITIONAL.nd2"
+1) Recursively crawl parent directory,
+    find all .nd2 file types,
+    optional compilation of different files using groupby
+        --groupby tup(i,j) of filename split by (-|_|.)
+
+2) (Optional) export a 16bit .tiff stack of experiment 
+
+3) (Optional) Identify metadata and create/export 16bit projections 
+                with optional filtering/thresholding
+                    -By default assumes DAPI as 405nm
+                    and creates a maximum intensity projection for more visible
+                    counterstain
+                    -other hardcoded channels (480nm,561nm,640nm) will be 
+                    mean intensity projections more suitable for quantification
+
+4) (Optional) Convert projections to normalized 8bit RGB images,
+                map wavelengths to colors and labeled proteins,
+                Plot in order of descending wavelength, and add
+                a composite image at the end.
+                Add scalebar on first image based on metadata
+                Add labels for each channel on each image
+                Size figure correctly in order to export figure at original resolution for each channel
+                    if aspect ratio is >1: 
+                        Arranges panels vertically
+                    if aspect ratio is <=1: 
+                        Arranges horizontally
 
 """
-
-
 
 app = wx.App(False) # the wx.App object must be created first.    
 ppi = wx.Display().GetPPI()[0]
@@ -110,17 +136,46 @@ def merge_files(collected_channels_dicts):
 
 def resolve_channels(channels):
     cmap = {"640":'r',
-                        '561':'r',
-                        '488':'g',
-                        '405':'b'}
+            '561':'r',
+            '488':'g',
+            '405':'b'}
     if len(channels)>3:
         raise ValueError('More then 3 color channels not supported for creating composite images')
     if ('561' in channels)&('640' in channels):
-        cmap = {"640":'r',
-                        '561':'g',
-                        '488':'b',
-                        '405':'b'}
+        cmap = {
+                "640":'r',
+                '561':'g',
+                '488':'b',
+                '405':'b'}
     return cmap
+
+def get_exportnames_from_file(pattern,identify,groupby):
+    fig_ext = '.png'
+    identifier_slice = identify if identify is not None else groupby if groupby is not None else (0,-1)
+    sample_id = pattern[identifier_slice[0]:identifier_slice[1]]
+    outname = "_".join(sample_id)
+    fig_localoutname = f'{outname}{fig_ext}'
+    return outname, fig_localoutname
+
+def merge_nd2_to_dict(grouped_images,identify,groupby):
+    collected_channels_dicts = []
+    for i,(_,pattern,f) in enumerate(grouped_images):
+        print(i,pattern,f)
+        if i==0:
+            outname, fig_localoutname = get_exportnames_from_file(pattern,identify,groupby)
+            metadata = (outname,fig_localoutname)
+
+        with ND2Reader(f) as images:
+            channels = images.metadata['channels']
+            numChannels = len(channels)
+            set_axes_to_iterate(images)
+            channels_dict = {channels[i]:[] for i in range(numChannels)}
+            for k,frame in enumerate(images):
+                channels_dict[channels[k%numChannels]].append(frame)
+        collected_channels_dicts.append((images.metadata, channels_dict))
+    tagged_collection = {'metadata':metadata,'data':collected_channels_dicts}
+    
+    return tagged_collection
 
 def _check_all_folders_in_path(path):
     path_to_config = f"{path}{os.sep}channelmap.txt"
@@ -143,7 +198,8 @@ def get_channelmap(folder):
 
     print(channel_to_protein)
     return channel_to_protein
-##Data functions
+
+##Data functions (operating on u16)
 normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
 def framestack_to_vol(framestack):
@@ -152,6 +208,19 @@ def framestack_to_vol(framestack):
     for i,frame in enumerate(framestack):
         vol[i,:,:] = frame
     return vol
+
+def get_projection(framestack,method='mean'):
+    meth_map = {'mean':lambda x: np.nanmean(x[0:,:,:],axis=0,dtype=np.uint16),
+            'med':lambda x: np.nanmedian(x[0:,:,:],axis=0),
+            'max':lambda x: np.nanmax(x[0:,:,:],axis=0),
+            'sum':lambda x: np.nansum(x[0:,:,:],axis=0,dtype=np.uint16)
+    }
+    vol = framestack_to_vol(framestack)
+    return meth_map[method](vol)
+
+def analyze_fstack(fstack,proj_type):
+    proj = get_projection(fstack,proj_type)
+    return proj
 
 def plot_result(image, background):
     fig, ax = plt.subplots(nrows=1, ncols=3)
@@ -187,16 +256,13 @@ def filter_vol(vol):
         plt.show()
     return vol-background
 
-def get_projection(framestack,method='mean'):
-    meth_map = {'mean':lambda x: np.nanmean(x[0:,:,:],axis=0,dtype=np.uint16),
-            'med':lambda x: np.nanmedian(x[0:,:,:],axis=0),
-            'max':lambda x: np.nanmax(x[0:,:,:],axis=0),
-            'sum':lambda x: np.nansum(x[0:,:,:],axis=0,dtype=np.uint16)
-    }
-    vol = framestack_to_vol(framestack)
-    #vol = filter_vol(vol)
-    VIP = meth_map[method](vol)
-    return VIP
+def threshold_proj(frame):
+    pass
+
+
+##Plotting Functions
+
+##Data (u16) to Frame (u8 RGB)
 
 def gray_to_color(frame,color='g'):
     cmap = {"r":-2,'g':-1,'b':0}
@@ -205,6 +271,12 @@ def gray_to_color(frame,color='g'):
     dst = np.roll(dst,cmap[color],axis=2)
     return dst
 
+def projection_to_frame(proj,c):
+    frame = normalize_frame(proj)
+    color_frame = gray_to_color(frame,c)
+    return color_frame
+
+##Frame functions for display
 def make_composite(cframes):
     shapes = [x.shape for x in cframes]
     if len(set(shapes)) > 1:
@@ -212,7 +284,28 @@ def make_composite(cframes):
     result = np.nansum(np.stack(cframes),axis=0)
     return result
 
-##Plotting Functions
+def show_frame(frame,ax):
+    interp='hermite'
+    if frame is None:
+        return
+    ax.imshow(frame,interpolation=interp,vmin=0, vmax=255, aspect='equal') 
+
+def calc_fontsize(frameshape):
+    subplot_size =(frameshape[1]/ppi,frameshape[0]/ppi)
+    normalizing_dim = subplot_size[1]*72
+    fontsize = int(round(normalizing_dim*0.06))
+    print(f"ScanDimensions: {frameshape[1]}x{frameshape[0]}px\nFigDimensions: {subplot_size[0]:.02f}x{subplot_size[1]:.02f}in.\nFontsize: {fontsize}pt")
+    return fontsize
+
+def rainbow_text(x,y,ls,lc,ax,**kw):
+    t = ax.transAxes
+    fig = plt.gcf()
+    for i,b in enumerate(zip(ls,lc)):
+        s,c = b
+        text = plt.text(x,y,s,color=c, transform=t,**kw)
+        text.draw(fig.canvas.get_renderer())
+        ex = text.get_window_extent()
+        t = transforms.offset_copy(text._transform, x=ex.width, units='dots')
 
 def set_plot(framesize,n):
     if framesize[1]>framesize[0]:
@@ -239,28 +332,6 @@ def yield_subplot(col,fig,gs):
     ax1.axis('off')
     return ax1
 
-def show_frame(frame,ax):
-    interp='hermite'
-    if frame is None:
-        return
-    ax.imshow(frame,interpolation=interp,vmin=0, vmax=255, aspect='equal') 
-
-def calc_fontsize(frameshape):
-    subplot_size =(frameshape[1]/ppi,frameshape[0]/ppi)
-    normalizing_dim = subplot_size[1]*72
-    fontsize = int(round(normalizing_dim*0.06))
-    print(f"ScanDimensions: {frameshape[1]}x{frameshape[0]}px\nFigDimensions: {subplot_size[0]:.02f}x{subplot_size[1]:.02f}in.\nFontsize: {fontsize}pt")
-    return fontsize
-
-def rainbow_text(x,y,ls,lc,ax,**kw):
-    t = ax.transAxes
-    fig = plt.gcf()
-    for i,b in enumerate(zip(ls,lc)):
-        s,c = b
-        text = plt.text(x,y,s,color=c, transform=t,**kw)
-        text.draw(fig.canvas.get_renderer())
-        ex = text.get_window_extent()
-        t = transforms.offset_copy(text._transform, x=ex.width, units='dots')
 
 ##IO
 def write_proj(fig,path,filename,ext='.tif'):
@@ -278,8 +349,7 @@ def save_fig(fig,f):
 
 
     
-def main(directory,clear=True,groupby=(0,2)):
-    fig_ext = '.png'
+def main(directory,clear=True,groupby=None,identify=None):
 
     foldersWithData = scan_data(directory)
     [print(folder) for folder in foldersWithData]
@@ -301,63 +371,68 @@ def main(directory,clear=True,groupby=(0,2)):
         print('--'*10)
         print(f'Folder {folder_count}:\n{folder}')
         print('--'*10)
+
         sample_count = 0
-        for sample_id,grouped_images in file_groups:
+        for group,grouped_images in file_groups:
             sample_count+=1
-            if groupby is None:
-                outname = sample_id
-            else:
-                outname = "_".join(sample_id)
+
+            tagged_data = merge_nd2_to_dict(grouped_images,identify,groupby)
+
+            ##get chosen sample identifer from tagged data
+            outname,fig_localoutname = tagged_data.pop('metadata')
+            fig_outname = f'{fig_path}{os.sep}{fig_localoutname}'
             print(f'\nSample {sample_count}: {outname}\n')
-            fig_outname = f'{fig_path}{os.sep}{outname}{fig_ext}'
             
-            collected_channels_dicts = []
-            for i,pattern,f in grouped_images:
-                with ND2Reader(f) as images:
-                    channels = images.metadata['channels']
-                    numChannels = len(channels)
-                    set_axes_to_iterate(images)
-                    channels_dict = {channels[i]:[] for i in range(numChannels)}
-                    for i,frame in enumerate(images):
-                        channels_dict[channels[i%numChannels]].append(frame)
-                collected_channels_dicts.append((images.metadata, channels_dict))
+            ##get collection of data and merge
+            collected_channels_dicts = tagged_data['data']
             metadata, channels_dict = merge_files(collected_channels_dicts)
+            c,first_channel = next(iter((channels_dict.items())))
 
             channels = list(channels_dict.keys())
+            channel_to_color = resolve_channels(channels)
+            named_channels = list(channels_dict.items())
+            named_channels.sort(key=lambda x: x[0],reverse=True)
+            channel_to_protein = get_channelmap(folder)
             print('Recognized Channels:')
             [print(f"{x}nm") for x in channels]
             print('')
             channel_to_color = resolve_channels(channels)
             channel_to_protein = get_channelmap(folder)
 
+            
+            ##Data calculations
+            
+            first_frame = first_channel[0]
+
+            ##Prepare plot
             num_subplots = len(channels)
             if num_subplots>1:
                 num_subplots+=1
-            
-            framesize = frame.shape
+            framesize = first_frame.shape
             fig,gs = set_plot(framesize,num_subplots)
             fontsize = calc_fontsize(framesize)
             fig.suptitle(outname,fontsize=fontsize)
+            
+
             color_frames = []
 
-            named_channels = list(channels_dict.items())
-            named_channels.sort(key=lambda x: x[0],reverse=True)
             for i,(c,fstack) in enumerate(named_channels):
                 projection_type = channel_to_proj_map[c]
                 channel_outname = f'{outname}-{c}nm-{projection_type.upper()}'
                 
-                if export_flags['raw']==True:
+                if export_flags['raw']:
                     imageio.mimwrite(f'{raw_path}{os.sep}{channel_outname}.tiff',fstack)
-                if calc_proj:
-                    proj = get_projection(fstack,projection_type)
-                    if export_flags['proj'] == True:
-                        write_proj(proj,proj_path,channel_outname)
-                if create_fig:
-                    ##Raw data to frames for display
-                    ax = yield_subplot(i,fig,gs)
 
-                    frame = normalize_frame(proj)
-                    color_frame = gray_to_color(frame,channel_to_color[c])
+                if calc_proj:
+                    proj = analyze_fstack(fstack,projection_type)
+                    if export_flags['proj']:
+                        write_proj(proj,proj_path,channel_outname)
+
+                if create_fig:
+                    if not calc_proj:
+                        proj = analyze_fstack(fstack,projection_type)
+                    color_frame = projection_to_frame(proj,channel_to_color[c])
+                    ax = yield_subplot(i,fig,gs)
                     show_frame(color_frame, ax)
 
                     try:
@@ -382,7 +457,7 @@ def main(directory,clear=True,groupby=(0,2)):
                 show_frame(composite, ax)
                 rainbow_text(0.03,.02,[channel_to_protein[x] for x in channels],[channel_to_color[x] for x in channels],size=fontsize,ax=ax)
             if create_fig:
-            # plt.show()
+                plt.show()
                 if export_flags['figure']:
                     save_fig(fig,fig_outname)
 
@@ -390,6 +465,13 @@ def main(directory,clear=True,groupby=(0,2)):
 
 
 if __name__=='__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--clear', help="Clear previous exports",
+                                    default=False,
+                                    action='store_true')                             
+    args = parser.parse_args()
+    
     laptop = r'C:\Users\dillo'
     desktop = r'D:'
     directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
@@ -419,7 +501,7 @@ if __name__=='__main__':
                             '640':'mean'
                             }
 
-    main(directory,clear=True,groupby=(0,2))
+    main(directory,clear=args.clear,groupby=(0,2),identify=(0,6))
     
 
 
