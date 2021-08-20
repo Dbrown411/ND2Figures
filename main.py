@@ -389,15 +389,15 @@ def main(directory,clear=True,groupby=None,identify=None):
             c,first_channel = next(iter((channels_dict.items())))
 
             channels = list(channels_dict.keys())
-            channel_to_color = resolve_channels(channels)
+            channels.sort(reverse=True)
             named_channels = list(channels_dict.items())
             named_channels.sort(key=lambda x: x[0],reverse=True)
+            channel_to_color = resolve_channels(channels)
             channel_to_protein = get_channelmap(folder)
+
             print('Recognized Channels:')
             [print(f"{x}nm") for x in channels]
             print('')
-            channel_to_color = resolve_channels(channels)
-            channel_to_protein = get_channelmap(folder)
 
             
             ##Data calculations
