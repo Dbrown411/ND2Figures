@@ -5,10 +5,10 @@ Dillon Brown, 19Aug2021
 """
 from nd2reader import ND2Reader
 import matplotlib as mpl
-# mpl.use("Agg")
-mpl.use("Qt5Agg")
+mpl.use("Agg")
+#mpl.use("Qt5Agg")
 import matplotlib.pyplot as plt
-import glob,os,argparse
+import glob,os,argparse, json
 import numpy as np
 import cv2 as cv2
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
@@ -36,7 +36,7 @@ Functions/Use
                     -By default assumes DAPI as 405nm
                     and creates a maximum intensity projection for more visible
                     counterstain
-                    -other hardcoded channels (480nm,550nm,640nm) will be 
+                    -other hardcoded channels (480nm,561nm,640nm) will be 
                     mean intensity projections more suitable for quantification
 
 4) (Optional) Convert projections to normalized 8bit RGB images,
@@ -52,8 +52,6 @@ Functions/Use
                         Arranges horizontally
 
 """
-
-
 
 app = wx.App(False) # the wx.App object must be created first.    
 ppi = wx.Display().GetPPI()[0]
@@ -138,15 +136,15 @@ def merge_files(collected_channels_dicts):
 
 def resolve_channels(channels):
     cmap = {"640":'r',
-                        '550':'r',
-                        '488':'g',
-                        '405':'b'}
+            '561':'r',
+            '488':'g',
+            '405':'b'}
     if len(channels)>3:
         raise ValueError('More then 3 color channels not supported for creating composite images')
-    if ('550' in channels)&('640' in channels):
+    if ('561' in channels)&('640' in channels):
         cmap = {
                 "640":'r',
-                '550':'g',
+                '561':'g',
                 '488':'b',
                 '405':'b'}
     return cmap
@@ -178,6 +176,28 @@ def merge_nd2_to_dict(grouped_images,identify,groupby):
     tagged_collection = {'metadata':metadata,'data':collected_channels_dicts}
     
     return tagged_collection
+
+def _check_all_folders_in_path(path):
+    path_to_config = f"{path}{os.sep}channelmap.txt"
+    if not os.path.isfile(path_to_config):
+        try:
+            _check_all_folders_in_path(os.path.split(path_to_config)[0])
+        except:
+            return None
+    else:
+        return path_to_config
+def get_channelmap(folder):
+    print(folder)
+    path_to_config = _check_all_folders_in_path(folder)
+    if path_to_config is None:
+        with open('default_channelmap.txt','r') as f:
+            channel_to_protein = json.load(f)
+    else:
+        with open(path_to_config,'r') as f:
+            channel_to_protein = json.load(f)
+
+    print(channel_to_protein)
+    return channel_to_protein
 
 ##Data functions (operating on u16)
 normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -371,7 +391,7 @@ def main(directory,clear=True,groupby=None,identify=None):
             channel_to_color = resolve_channels(channels)
             named_channels = list(channels_dict.items())
             named_channels.sort(key=lambda x: x[0],reverse=True)
-            
+            channel_to_protein = get_channelmap(folder)
             print('Recognized Channels:')
             [print(f"{x}nm") for x in channels]
             print('')
@@ -450,7 +470,7 @@ if __name__=='__main__':
     
     laptop = r'C:\Users\dillo'
     desktop = r'D:'
-    directory = rf"{desktop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
+    directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
     
     calc_proj = True
     create_fig = True
@@ -465,14 +485,14 @@ if __name__=='__main__':
     channel_to_protein = {
                         '405':'DAPI',
                         '488':'ACAN',
-                        '550':'ACAN',
+                        '561':'ACAN',
                         '640':'pACAN'
                         }
 
     channel_to_proj_map = {
                             '405':'max',
                             '488':'mean',
-                            '550':'mean',
+                            '561':'mean',
                             '640':'mean'
                             }
 
