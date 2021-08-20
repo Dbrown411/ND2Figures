@@ -3,23 +3,20 @@
 Version 1
 Dillon Brown, 19Aug2021
 """
-from nd2reader import ND2Reader
-import matplotlib as mpl
-# mpl.use("Agg")
-mpl.use("Qt5Agg")
-import matplotlib.pyplot as plt
 import glob,os,argparse, json
+import re as r
+import itertools as it
+from nd2reader import ND2Reader
+import imageio
+import wx
 import numpy as np
 import cv2 as cv2
+from skimage import restoration
+
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from matplotlib.backend_bases import FigureCanvasBase as FigureCanvas
-import wx
-from matplotlib_scalebar.scalebar import ScaleBar
-import re as r
 from matplotlib import transforms
-import itertools as it
-from skimage import restoration
-import imageio
+from matplotlib_scalebar.scalebar import ScaleBar
 
 """
 Functions/Use
@@ -186,6 +183,7 @@ def _check_all_folders_in_path(path):
             return None
     else:
         return path_to_config
+
 def get_channelmap(folder):
     print(folder)
     path_to_config = _check_all_folders_in_path(folder)
@@ -383,8 +381,7 @@ def save_fig(fig,f):
             print(e)
             pass
 
-
-    
+ 
 def main(directory,clear=True,groupby=None,identify=None):
 
     foldersWithData = scan_data(directory)
@@ -506,11 +503,25 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--clear', help="Clear previous exports",
                                     default=False,
+                                    action='store_true')
+    parser.add_argument('--show', help="show plots",
+                                    default=False,
                                     action='store_true')   
     parser.add_argument('--default', help="use default path",
                                     default=False,
-                                    action='store_true')   
+                                    action='store_true')
+
     args = parser.parse_args()
+
+    if args.show:
+        import matplotlib as mpl
+        mpl.use("Qt5Agg")
+    else:
+        import matplotlib as mpl
+        mpl.use("Agg")
+    import matplotlib.pyplot as plt
+
+    
     laptop = r'C:\Users\dillo'
     desktop = r'D:'
     directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
