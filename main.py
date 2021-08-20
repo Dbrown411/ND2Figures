@@ -3,19 +3,16 @@
 Version 1
 Dillon Brown, 19Aug2021
 """
+from plotting import *
 import glob,os,argparse, json
 import re as r
 import itertools as it
 from nd2reader import ND2Reader
 import imageio
-import wx
 import numpy as np
 import cv2 as cv2
 from skimage import restoration
 
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-from matplotlib.backend_bases import FigureCanvasBase as FigureCanvas
-from matplotlib import transforms
 from matplotlib_scalebar.scalebar import ScaleBar
 
 """
@@ -50,9 +47,7 @@ Functions/Use
 
 """
 
-app = wx.App(False) # the wx.App object must be created first.    
-ppi = wx.Display().GetPPI()[0]
-dispPPI = ppi*0.75
+
 
 
 ##Data retrieval/organization
@@ -113,92 +108,8 @@ def match_scans(folder,groupby=(0,2)):
     grouped = it.groupby(nd2Filenames,key=lambda x: x[1][groupby[0]:groupby[1]])
     return grouped
 
-def set_axes_to_iterate(images):
-    iteraxes = []
-    if int(images.metadata['total_images_per_channel'])>1:
-        iteraxes.append('z')
-    if len(images.metadata['channels'])>1:
-        iteraxes.append('c')
-    images.iter_axes = iteraxes
-
-def merge_files(collected_channels_dicts):
-    collected_channels_dicts.sort(key=lambda x: len(x[1]))
-    merged = collected_channels_dicts.pop(0)
-    meta1,merged = merged
-    collected_meta = [meta1]
-    for m,d in collected_channels_dicts:
-        merged.update(d)
-        collected_meta.append([m])
-    return (collected_meta, merged)
-
-def resolve_channels(channels):
-    cmap = {"640":'r',
-            '561':'r',
-            '488':'g',
-            '405':'b'}
-    if len(channels)>3:
-        raise ValueError('More then 3 color channels not supported for creating composite images')
-    if ('561' in channels)&('640' in channels):
-        cmap = {
-                "640":'r',
-                '561':'g',
-                '488':'b',
-                '405':'b'}
-    return cmap
-
-def get_exportnames_from_file(pattern,identify,groupby):
-    fig_ext = '.png'
-    identifier_slice = identify if identify is not None else groupby if groupby is not None else (0,-1)
-    sample_id = pattern[identifier_slice[0]:identifier_slice[1]]
-    outname = "_".join(sample_id)
-    fig_localoutname = f'{outname}{fig_ext}'
-    return outname, fig_localoutname
-
-def merge_nd2_to_dict(grouped_images,identify,groupby):
-    collected_channels_dicts = []
-    for i,(_,pattern,f) in enumerate(grouped_images):
-        print(i,pattern,f)
-        if i==0:
-            outname, fig_localoutname = get_exportnames_from_file(pattern,identify,groupby)
-            metadata = (outname,fig_localoutname)
-
-        with ND2Reader(f) as images:
-            channels = images.metadata['channels']
-            numChannels = len(channels)
-            set_axes_to_iterate(images)
-            channels_dict = {channels[i]:[] for i in range(numChannels)}
-            for k,frame in enumerate(images):
-                channels_dict[channels[k%numChannels]].append(frame)
-        collected_channels_dicts.append((images.metadata, channels_dict))
-    tagged_collection = {'metadata':metadata,'data':collected_channels_dicts}
-    
-    return tagged_collection
-
-def _check_all_folders_in_path(path):
-    path_to_config = f"{path}{os.sep}channelmap.txt"
-    if not os.path.isfile(path_to_config):
-        try:
-            _check_all_folders_in_path(os.path.split(path_to_config)[0])
-        except:
-            return None
-    else:
-        return path_to_config
-
-def get_channelmap(folder):
-    print(folder)
-    path_to_config = _check_all_folders_in_path(folder)
-    if path_to_config is None:
-        with open('default_channelmap.txt','r') as f:
-            channel_to_protein = json.load(f)
-    else:
-        with open(path_to_config,'r') as f:
-            channel_to_protein = json.load(f)
-
-    print(channel_to_protein)
-    return channel_to_protein
 
 ##Data functions (operating on u16)
-normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
 def framestack_to_vol(framestack):
     volume_shape = (len(framestack),framestack[0].shape[0],framestack[0].shape[1])
@@ -251,7 +162,6 @@ def filter_vol(vol):
         plt.show()
     return vol-background
 
-
 def offset_projection(proj,new_0):
     original = np.array(proj, dtype=np.int32)
     max16 = np.max(original)
@@ -260,7 +170,6 @@ def offset_projection(proj,new_0):
     newImage = newImage.clip(min=0)
     offset_proj = cv2.normalize(newImage, None, 0, newmax16, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
     return offset_proj
-
 
 def identify_foreground(img):
     blur = cv2.GaussianBlur(img,(5,5),0)
@@ -294,94 +203,153 @@ def analyze_fstack(vol,proj_type,calc_proj):
     return offset_proj, (foreground,display_background)
 
 
-##Plotting Functions
+class ND2Accumulator:
+    def __init__(self,group=None,identify=None,groupby=None):
+        self._set_defaults()
+        self.identify = identify
+        self.groupby = groupby
+        self.named_channels = {}
+        if group is not None:
+            self.group = group
 
-##Data (u16) to Frame (u8 RGB)
+    ##Defaults/updating functions for mapping channels to proteins/colors
+    def _set_defaults(self):
+        self.channel_to_protein = {
+                        '405':'DAPI',
+                        '488':'488',
+                        '561':'561',
+                        '640':'640'
+                        }
+        self.channel_to_color = {
+                        "640":'r',
+                        '561':'r',
+                        '488':'g',
+                        '405':'b'
+                        }  
 
-def gray_to_color(frame,color='g'):
-    cmap = {"r":-2,'g':-1,'b':0}
-    dst = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-    dst[:,:,:2] = 0
-    dst = np.roll(dst,cmap[color],axis=2)
-    return dst
+    def get_exportnames_from_file(self,pattern):
+        identifier_slice = self.identify if self.identify is not None else self.groupby if self.groupby is not None else (0,-1)
+        sample_id = pattern[identifier_slice[0]:identifier_slice[1]]
+        self.outname = "_".join(sample_id)
 
-def projection_to_frame(proj,c):
-    frame = normalize_frame(proj)
-    color_frame = gray_to_color(frame,c)
-    return color_frame
+    def merge_nd2_to_dict(self,grouped_images):
+        def set_axes_to_iterate(images):
+            iteraxes = []
+            if int(images.metadata['total_images_per_channel'])>1:
+                iteraxes.append('z')
+            if len(images.metadata['channels'])>1:
+                iteraxes.append('c')
+            images.iter_axes = iteraxes
 
-##Frame functions for display
-def make_composite(cframes):
-    shapes = [x.shape for x in cframes]
-    if len(set(shapes)) > 1:
-        return None
-    result = np.nansum(np.stack(cframes),axis=0)
-    return result
+        collected_channels_dicts = []
+        for i,(_,pattern,f) in enumerate(grouped_images):
+            print(i,pattern,f)
+            if i==0:
+                self.get_exportnames_from_file(pattern)
 
-def show_frame(frame,ax):
-    interp='hermite'
-    if frame is None:
-        return
-    ax.imshow(frame,interpolation=interp,vmin=0, vmax=255, aspect='equal') 
+            with ND2Reader(f) as images:
+                channels = images.metadata['channels']
+                numChannels = len(channels)
+                set_axes_to_iterate(images)
+                channels_dict = {channels[i]:[] for i in range(numChannels)}
+                for k,frame in enumerate(images):
+                    channels_dict[channels[k%numChannels]].append(frame)
+            collected_channels_dicts.append((images.metadata, channels_dict))
+        return collected_channels_dicts
 
-def calc_fontsize(frameshape):
-    subplot_size =(frameshape[1]/ppi,frameshape[0]/ppi)
-    normalizing_dim = subplot_size[1]*72
-    fontsize = int(round(normalizing_dim*0.06))
-    print(f"ScanDimensions: {frameshape[1]}x{frameshape[0]}px\nFigDimensions: {subplot_size[0]:.02f}x{subplot_size[1]:.02f}in.\nFontsize: {fontsize}pt")
-    return fontsize
+    def merge_files(self,collected_channels_dicts):
+        collected_channels_dicts.sort(key=lambda x: len(x[1]))
+        merged = collected_channels_dicts.pop(0)
+        meta1,merged = merged
+        collected_meta = [meta1]
+        for m,d in collected_channels_dicts:
+            merged.update(d)
+            collected_meta.append([m])
+        return (collected_meta, merged)
 
-def rainbow_text(x,y,ls,lc,ax,**kw):
-    t = ax.transAxes
-    fig = plt.gcf()
-    for i,b in enumerate(zip(ls,lc)):
-        s,c = b
-        text = plt.text(x,y,s,color=c, transform=t,**kw)
-        text.draw(fig.canvas.get_renderer())
-        ex = text.get_window_extent()
-        t = transforms.offset_copy(text._transform, x=ex.width, units='dots')
-
-def set_plot(framesize,n):
-    if framesize[1]>framesize[0]:
-        ncols = 1
-        nrows = n
-        figsize = (framesize[1]/ppi,(framesize[0]*nrows/ppi)*(1/.9))
-    else:
-        ncols = n
-        nrows = 1
-        figsize = (framesize[1]*ncols/ppi,(framesize[0]/ppi)*(1/.9))
-
-    fig = plt.figure(dpi=ppi,figsize=figsize)
-    gs = mpl.pyplot.GridSpec(ncols=ncols, nrows=nrows,wspace=0.01,hspace=0.01)
-    l, t, r, b = 0, .9, 1, 0 
-    gs.update(left=l, top=t, right=r, bottom=b)
-    return fig,gs
-
-def yield_subplot(col,fig,gs):
-    try:
-        ax1 = fig.add_subplot(gs[0,col])
-    except:
-        ax1 = fig.add_subplot(gs[col,0])
+    def set_group(self,grouped_images):
+        collected_channels_dicts = self.merge_nd2_to_dict(grouped_images)
         
-    ax1.axis('off')
-    return ax1
+        ##get collection of data and merge
+        metadata, channels_dict = self.merge_files(collected_channels_dicts)
+        c,first_channel = next(iter((channels_dict.items())))
+        self.framesize = first_channel[0].shape
 
+        channels = list(channels_dict.keys())
+        channels.sort(reverse=True)
+        self.channels = channels
+        self.named_channels = list(channels_dict.items())
+        self.named_channels.sort(key=lambda x: x[0],reverse=True)
+        print('Recognized Channels:')
+        [print(f"{x}nm") for x in channels]
+        print('')
 
-##IO
-def write_proj(fig,path,filename,ext='.tif'):
-    cv2.imwrite(f"{path}{os.sep}{filename}{ext}", fig)
+  
+    @property
+    def group(self):
+        return self.named_channels
+    @group.setter
+    def group(self,grouped_images):
+        if grouped_images is None:
+            return
+        self.set_group(grouped_images)
+        
+    @property
+    def identify(self):
+        return self._identify
+    @identify.setter
+    def identify(self,arr_slice):
+        self._identify = arr_slice
 
-def save_fig(fig,f):
-    try:
-        fig.savefig(f)
-    except:
-        try:
-            fig.savefig(f'{f}-01')
-        except Exception as e:
-            print(e)
-            pass
+    @property
+    def groupby(self):
+        return self._groupby
+    @groupby.setter
+    def groupby(self,arr_slice):
+        self._groupby = arr_slice
 
- 
+    @property
+    def folder(self):
+        return self._folder
+    @folder.setter
+    def folder(self,folder):
+        self._folder = folder
+        self.get_channelmap(folder)
+    
+    @property
+    def channels(self):
+        return self._channels
+    @channels.setter
+    def channels(self,channels):
+        self._channels = channels
+        self.resolve_channels()
+
+    def get_channelmap(self,folder):
+        path_to_config = _check_all_folders_in_path(folder)
+        if path_to_config is None:
+            try:
+                with open('default_channelmap.txt','r') as f:
+                    self.channel_to_protein = json.load(f)
+            except:
+                pass
+        else:
+            with open(path_to_config,'r') as f:
+                self.channel_to_protein = json.load(f)
+
+    def resolve_channels(self):
+        if len(self.channels)>3:
+            raise ValueError('More then 3 color channels not supported for creating composite images')
+        if ('561' in self.channels)&('640' in self.channels):
+            self.channel_to_color = {
+                                    "640":'r',
+                                    '561':'g',
+                                    '488':'b',
+                                    '405':'b'
+                                    }
+
+    def write_proj(fig,path,filename,ext='.tif'):
+        cv2.imwrite(f"{path}{os.sep}{filename}{ext}", fig)
+
 def main(directory,clear=True,groupby=None,identify=None):
 
     foldersWithData = scan_data(directory)
@@ -394,6 +362,8 @@ def main(directory,clear=True,groupby=None,identify=None):
         [create_folders(folder,export_flags,clear=True) for folder in foldersWithData]
 
     folder_count = 0
+    plotter = ProjPlotter(disp=False)
+
     for folder in foldersWithData:
         folder_count+=1
 
@@ -408,39 +378,15 @@ def main(directory,clear=True,groupby=None,identify=None):
         sample_count = 0
         for group,grouped_images in file_groups:
             sample_count+=1
-
-            tagged_data = merge_nd2_to_dict(grouped_images,identify,groupby)
-
-            ##get chosen sample identifer from tagged data
-            outname,fig_localoutname = tagged_data.pop('metadata')
-            fig_outname = f'{fig_path}{os.sep}{fig_localoutname}'
-            print(f'\nSample {sample_count}: {outname}\n')
+            groupedImages = ND2Accumulator(grouped_images,identify,groupby)
             
-            ##get collection of data and merge
-            collected_channels_dicts = tagged_data['data']
-            metadata, channels_dict = merge_files(collected_channels_dicts)
-            c,first_channel = next(iter((channels_dict.items())))
-
-            channels = list(channels_dict.keys())
-            channels.sort(reverse=True)
-            named_channels = list(channels_dict.items())
-            named_channels.sort(key=lambda x: x[0],reverse=True)
-            channel_to_color = resolve_channels(channels)
-            channel_to_protein = get_channelmap(folder)
-
-            print('Recognized Channels:')
-            [print(f"{x}nm") for x in channels]
-            print('')
-
             
             ##Data calculations
             
-            first_frame = first_channel[0]
 
             ##Prepare plot
-            num_subplots = len(channels)
-            if num_subplots>1:
-                num_subplots+=1
+
+            plotter.set
             framesize = first_frame.shape
             fig,gs = set_plot(framesize,num_subplots)
             fontsize = calc_fontsize(framesize)
@@ -546,14 +492,6 @@ if __name__=='__main__':
                     'proj':True,
                     'figure':True
                     }
-
-    channel_to_protein = {
-                        '405':'DAPI',
-                        '488':'ACAN',
-                        '561':'ACAN',
-                        '640':'pACAN'
-                        }
-
 
     channel_to_proj_map = {
                             '405':'max',
