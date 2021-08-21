@@ -75,31 +75,31 @@ def get_projection(vol,method='sum'):
 
 def find_frame_maxes(frames = []):
     norm_against = [np.max(x) for x in frames]
-    print(norm_against)
     overall_max = np.max(norm_against)
-    print(overall_max)
     norm_against = [np.divide(x,overall_max) for x in norm_against]
-    print(norm_against)
     norm_against = [int(np.round(x*255)) for x in norm_against]
-    print(norm_against)
-    print('--'*5)
     return norm_against
 
-def plot_result(image, background):
-    immax,bgmax = find_frame_maxes([image,background])
+def plot_result(image, fg, bg):
+    immax,bgmax = find_frame_maxes([image,bg])
     fig, ax = plt.subplots(nrows=1, ncols=3)
-    print(immax,bgmax)
-    ax[0].imshow(normalize_frame(background,bgmax), cmap='Greens')
+    bg_frame = normalize_frame(bg,bgmax)
+    fg_frame = normalize_frame(fg,immax)
+    image_frame = normalize_frame(image,immax)
+
+    print(np.max(bg_frame))
+    print(np.max(image_frame))
+    ax[0].imshow(bg_frame, cmap='Greens',vmin=0,vmax=immax)
     ax[0].set_title('Background')
     ax[0].axis('off')
 
-    ax[1].imshow(normalize_frame(image,immax), cmap='Greens')
-    ax[1].set_title('Original image')
+    ax[1].imshow(fg_frame, cmap='Greens',vmin=0,vmax=immax)
+    ax[1].set_title('Foreground')
     ax[1].axis('off')
 
 
-    ax[2].imshow(normalize_frame(image - background), cmap='Greens')
-    ax[2].set_title('Result')
+    ax[2].imshow(image_frame, cmap='Greens',vmin=0,vmax=immax)
+    ax[2].set_title('Original')
     ax[2].axis('off')
 
     fig.tight_layout()
@@ -155,9 +155,9 @@ def analyze_fstack(vol,proj_type,calc_proj):
     background = cv2.bitwise_and(proj, mask16)
 
     mean_background = np.mean(background)
-    offset = int(round(mean_background))
+    offset = int(round(mean_background*1.5))
     if proj_type=='max':
-        offset*=3
+        offset*=2
     offset_proj  = offset_projection(proj,offset)
     return offset_proj, (foreground,background)
 
@@ -213,7 +213,7 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
                 ##Function should take a 3d np.vol of uint16 and return a 2d array of uint16 for display
                 ##
                 proj, fgbg = analyze_fstack(vol,projection_type,calc_proj)
-                # plot_result(proj,fgbg[1])
+                plot_result(proj,fgbg[0],fgbg[1])
 
                 if export_flags['proj']:
                     write_proj(proj,proj_path,channel_outname)
@@ -257,7 +257,8 @@ if __name__=='__main__':
     args = parser.parse_args()                     
     
     desktop = rf"D:"
-    directory = rf"{desktop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
+    laptop = rf"C:\Users\dillo"
+    directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
     if args.repeat:
         try:
             with open(LASTDIR, mode='r') as f:

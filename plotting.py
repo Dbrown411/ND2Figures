@@ -142,11 +142,11 @@ class SamplePlotter:
     
     def rainbow_text(self,x,y,ls,lc,ax,**kw):
         t = ax.transAxes
-        fig = plt.gcf()
+        fig = self.fig
 
         for i,b in enumerate(zip(ls,lc)):
             s,c = b
-            text = plt.text(x,y,s,color=c, transform=t, **kw)
+            text = ax.text(x,y,s,color=c, transform=t, **kw)
             text.set_path_effects([PathEffects.withStroke(linewidth=4, foreground='k')])
 
             text.draw(fig.canvas.get_renderer())
