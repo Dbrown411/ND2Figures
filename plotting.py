@@ -34,7 +34,6 @@ class SamplePlotter:
         self.num_subplots = num_subplots
         self.framesize = sample.framesize
         self.set_plot()
-        print(self.sample.metadata)
         self.make_scalebar(self.sample.metadata)
 
     @property
@@ -52,7 +51,6 @@ class SamplePlotter:
             pixels_micron = metadata['pixel_microns']
         except Exception as e:
             pixels_micron = metadata[0]['pixel_microns']
-        print(pixels_micron)
         self.scalebar = ScaleBar(pixels_micron,'um',frameon=True,location='lower right',
                             box_color=(1, 1, 1),box_alpha = 0,color='white',
                             font_properties = {'size':int(round(self.fontsize/2))})
@@ -62,6 +60,8 @@ class SamplePlotter:
         color_frame = self.projection_to_frame(data,self.sample.channel_to_color[c])
         subplot_num = self.sample.channel_order[c]
         ax = self.yield_subplot(subplot_num)
+        if subplot_num==0:
+            self.ax0 = ax
         self.show_frame(color_frame, ax)
         ls = [self.sample.channel_to_protein[c]]
         lc = [self.sample.channel_to_color[c]]
@@ -82,15 +82,14 @@ class SamplePlotter:
 
     ##Frame functions for display
     def plot_composite(self):
-        ax0 = self.yield_subplot(0)
-        ax0.add_artist(self.scalebar)
+        self.ax0.add_artist(self.scalebar)
         if len(self.color_frames)>3:
             return None
         composite = self.make_composite()
 
         ax = self.yield_subplot(self.num_subplots-1)
         self.show_frame(composite, ax)
-        ls= [self.sample.channel_to_protein[x] for x in self.channels],
+        ls= [self.sample.channel_to_protein[x] for x in self.channels]
         lc=[self.sample.channel_to_color[x] for x in self.channels]
         self.rainbow_text(0.03,.02,ls,lc,size=self.fontsize,ax=ax)
 
@@ -152,7 +151,7 @@ class SamplePlotter:
         self.gs.update(left=l, top=t, right=r, bottom=b)
         self.fig.suptitle(self.fig_folder,fontsize=self.fontsize)
 
-
+    
     def yield_subplot(self,col):
         try:
             ax1 = self.fig.add_subplot(self.gs[0,col])

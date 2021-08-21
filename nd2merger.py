@@ -37,7 +37,6 @@ class ND2Accumulator:
     def set_sample_name(self,pattern):
         identifier_slice = self.identify if self.identify is not None else self.groupby if self.groupby is not None else (0,-1)
         sample_id = pattern[identifier_slice[0]:identifier_slice[1]]
-        print(sample_id)
         self.name = "_".join(sample_id)
 
     def merge_nd2_to_dict(self,grouped_images):
@@ -51,7 +50,6 @@ class ND2Accumulator:
 
         collected_channels_dicts = []
         for i,(_,pattern,f) in enumerate(list(grouped_images[1])):
-            print(i,pattern,f)
             if i==0:
                 self.set_sample_name(pattern)
 
@@ -120,10 +118,12 @@ class ND2Accumulator:
     @property
     def folder(self):
         return self._folder
+        
     @folder.setter
     def folder(self,folder):
         self._folder = folder
         self.get_channelmap(folder)
+        print('set?')
     
     @property
     def channels(self):
@@ -135,16 +135,17 @@ class ND2Accumulator:
 
     def get_channelmap(self,folder):
         path_to_config = _check_all_folders_in_path(folder)
+        print(path_to_config)
         if path_to_config is None:
             try:
                 with open('default_channelmap.txt','r') as f:
                     self.channel_to_protein = json.load(f)
-            except:
+            except Exception as e:
+                print(e)
                 pass
         else:
             with open(path_to_config,'r') as f:
                 self.channel_to_protein = json.load(f)
-            print(e)
     
     def resolve_channels(self):
         if len(self.channels)>3:

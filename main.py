@@ -159,7 +159,6 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
     
 
     foldersWithData = scan_data(directory)
-    [print(folder) for folder in foldersWithData]
 
     ##Clear previous results
     if compile_all:
@@ -182,7 +181,7 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
 
         for group in file_groups:
             sample = ND2Accumulator(group,identify,groupby)
-            
+            sample.folder = folder
             plotter.fig_folder = fig_path
             plotter.sample = sample
             named_channels = sample.named_channels
