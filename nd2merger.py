@@ -123,7 +123,8 @@ class ND2Accumulator:
     def folder(self,folder):
         self._folder = folder
         self.get_channelmap(folder)
-        print('set?')
+        print(folder)
+        print(self.channel_to_protein)
     
     @property
     def channels(self):
@@ -135,7 +136,6 @@ class ND2Accumulator:
 
     def get_channelmap(self,folder):
         path_to_config = _check_all_folders_in_path(folder)
-        print(path_to_config)
         if path_to_config is None:
             try:
                 with open('default_channelmap.txt','r') as f:

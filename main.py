@@ -73,14 +73,27 @@ def get_projection(vol,method='sum'):
     proj = np.clip(proj, 0, 65535)
     return np.uint16(proj)
 
-def plot_result(image, background):
-    fig, ax = plt.subplots(nrows=1, ncols=3)
+def find_frame_maxes(frames = []):
+    norm_against = [np.max(x) for x in frames]
+    print(norm_against)
+    overall_max = np.max(norm_against)
+    print(overall_max)
+    norm_against = [np.divide(x,overall_max) for x in norm_against]
+    print(norm_against)
+    norm_against = [int(np.round(x*255)) for x in norm_against]
+    print(norm_against)
+    print('--'*5)
+    return norm_against
 
-    ax[0].imshow(normalize_frame(background), cmap='Greens')
+def plot_result(image, background):
+    immax,bgmax = find_frame_maxes([image,background])
+    fig, ax = plt.subplots(nrows=1, ncols=3)
+    print(immax,bgmax)
+    ax[0].imshow(normalize_frame(background,bgmax), cmap='Greens')
     ax[0].set_title('Background')
     ax[0].axis('off')
 
-    ax[1].imshow(normalize_frame(image), cmap='Greens')
+    ax[1].imshow(normalize_frame(image,immax), cmap='Greens')
     ax[1].set_title('Original image')
     ax[1].axis('off')
 
@@ -134,18 +147,19 @@ def analyze_fstack(vol,proj_type,calc_proj):
     frame = normalize_frame(proj)
 
     mask = identify_foreground(frame)
-    foreground = cv2.bitwise_and(frame, mask)
-    mask = cv2.bitwise_not(mask)
-    display_background = cv2.bitwise_and(frame, mask)
+    mask16 = cv2.normalize(mask, None, 0, 65535, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
+    foreground = cv2.bitwise_and(proj, mask16)
 
+    mask = cv2.bitwise_not(mask)
     mask16 = cv2.normalize(mask, None, 0, 65535, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
     background = cv2.bitwise_and(proj, mask16)
+
     mean_background = np.mean(background)
     offset = int(round(mean_background))
-    if proj_type=='MAX':
-        offset*=2
+    if proj_type=='max':
+        offset*=3
     offset_proj  = offset_projection(proj,offset)
-    return offset_proj, (foreground,display_background)
+    return offset_proj, (foreground,background)
 
 
 def write_proj(proj,path,filename,ext='.tif'):
@@ -195,24 +209,23 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
                 if export_flags['raw']:
                     imageio.mimwrite(f'{raw_path}{os.sep}{channel_outname}.tiff',fstack)
                 vol = framestack_to_vol(fstack)
-                ##Point at which custom analysis code could be easily injected
-                ##Function should take a 3d np.vol of uint16 and return a 2d array for display
+                ##Point at which custom analysis can be performed
+                ##Function should take a 3d np.vol of uint16 and return a 2d array of uint16 for display
                 ##
                 proj, fgbg = analyze_fstack(vol,projection_type,calc_proj)
-
+                # plot_result(proj,fgbg[1])
 
                 if export_flags['proj']:
                     write_proj(proj,proj_path,channel_outname)
                 if create_fig:
                     if not calc_proj:
                         proj, fgbg = analyze_fstack(fstack,projection_type,calc_proj)
-
+                
                     plotter.set_channel(c,proj)
                     chans.append(c)
-            print(chans)
-            plotter.plot()
 
             if create_fig:
+                plotter.plot()
                 plotter.plot_composite()
                 if disp:
                     plt.show()

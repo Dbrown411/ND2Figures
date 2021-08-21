@@ -7,7 +7,14 @@ from matplotlib_scalebar.scalebar import ScaleBar
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as PathEffects
 
-normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+def normalize_frame(frame,max=255):
+    return cv2.normalize(frame, None, 0, max, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+def find_frame_maxes(frames = []):
+    norm_against = [np.max(x) for x in frames]
+    overall_max = np.max(norm_against)
+    norm_against = [int(np.round((np.divide(x,overall_max)*255))) for x in norm_against]
+    return norm_against
 class SamplePlotter:
     def __init__(self):
         app = wx.App(False) # the wx.App object must be created first.    
@@ -43,7 +50,6 @@ class SamplePlotter:
     @fig_folder.setter
     def fig_folder(self,fig_folder):
         self._fig_folder = fig_folder
-
 
 
     ##Plotting Functions
@@ -86,7 +92,7 @@ class SamplePlotter:
             norm_against = [(c,np.max(x)) for c,x in normalizing]
             c,maxes = zip(*norm_against)
             overall_max = np.max(maxes)
-            norm_against = [(c,int(np.round((np.divide(x,overall_max)))*255)) for c,x in norm_against]
+            norm_against = [(c,int(np.round((np.divide(x,overall_max)*255)))) for c,x in norm_against]
             for c,m in norm_against:
                 channel_norm[c]=m
 
