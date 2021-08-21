@@ -1,60 +1,72 @@
 import cv2 as cv2
 import numpy as np
-from matplotlib import transforms
 import wx, json, os
-from importlib import import_module
-
+from matplotlib import transforms
+from matplotlib.pyplot import GridSpec
+from matplotlib_scalebar.scalebar import ScaleBar
+import matplotlib.pyplot as plt
 
 normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-
-def _check_all_folders_in_path(path):
-    path_to_config = f"{path}{os.sep}channelmap.txt"
-    if not os.path.isfile(path_to_config):
-        try:
-            _check_all_folders_in_path(os.path.split(path_to_config)[0])
-        except:
-            return None
-    else:
-        return path_to_config
-
-class ProjPlotter:
-    def __init__(self,nd2images,disp=False):
+class SamplePlotter:
+    def __init__(self):
         app = wx.App(False) # the wx.App object must be created first.    
         self.ppi = wx.Display().GetPPI()[0]
         self.dispPPI = self.ppi*0.75
-        self.nd2images = nd2images
-        self.set_plotvisible(disp)
         self.fig_ext = '.png'
-
-    def set_plotvisible(self,disp):
-        self.mpl = import_module('matplotlib')
-        if disp:
-            self.mpl.use("Qt5Agg")
-        else:
-            self.mpl.use("Agg")
-        self.plt = import_module('matplotlib.pyplot')
-        self.GridSpec = import_module('matplotlib.pyplot.GridSpec')    
-    
     @property
-    def nd2images(self):
-        return self._nd2images
-    @nd2images.setter
-    def nd2images(self,nd2images):
-        self._nd2images = nd2images
-        if nd2images is None:
+    def sample(self):
+        return self._sample
+    @sample.setter
+    def sample(self,sample):
+        self._sample = sample
+        self.color_frames = []
+
+        if sample is None:
             return
         
-        self.outname = nd2images.outname
-        self.fig_localout = f'{self.outname}{self.fig_ext}'
-        num_subplots = len(nd2images.channels)
+        self.sample_name = sample.name
+        figname = f'{self.sample_name}{self.fig_ext}'
+        self.fig_out = f"{self.fig_folder}{os.sep}{figname}"
+        num_subplots = len(sample.channels)
+        self.channels = sample.channels
         if num_subplots>1:
             num_subplots+=1
         self.num_subplots = num_subplots
-        self.framesize = nd2images.framesize
+        self.framesize = sample.framesize
         self.set_plot()
-    
+        print(self.sample.metadata)
+        self.make_scalebar(self.sample.metadata)
+
+    @property
+    def fig_folder(self):
+        return self._fig_folder
+    @fig_folder.setter
+    def fig_folder(self,fig_folder):
+        self._fig_folder = fig_folder
+
+
+
     ##Plotting Functions
+    def make_scalebar(self,metadata):
+        try:
+            pixels_micron = metadata['pixel_microns']
+        except Exception as e:
+            pixels_micron = metadata[0]['pixel_microns']
+        print(pixels_micron)
+        self.scalebar = ScaleBar(pixels_micron,'um',frameon=True,location='lower right',
+                            box_color=(1, 1, 1),box_alpha = 0,color='white',
+                            font_properties = {'size':int(round(self.fontsize/2))})
+
     ##Data (u16) to Frame (u8 RGB)
+    def set_channel(self,c,data):
+        color_frame = self.projection_to_frame(data,self.sample.channel_to_color[c])
+        subplot_num = self.sample.channel_order[c]
+        ax = self.yield_subplot(subplot_num)
+        self.show_frame(color_frame, ax)
+        ls = [self.sample.channel_to_protein[c]]
+        lc = [self.sample.channel_to_color[c]]
+        self.rainbow_text(0.03,.02,ls,lc,size=self.fontsize,ax=ax)
+
 
     def gray_to_color(self,frame,color='g'):
         cmap = {"r":-2,'g':-1,'b':0}
@@ -69,11 +81,25 @@ class ProjPlotter:
         return color_frame
 
     ##Frame functions for display
-    def make_composite(self,cframes):
-        shapes = [x.shape for x in cframes]
+    def plot_composite(self):
+        ax0 = self.yield_subplot(0)
+        ax0.add_artist(self.scalebar)
+        if len(self.color_frames)>3:
+            return None
+        composite = self.make_composite()
+
+        ax = self.yield_subplot(self.num_subplots-1)
+        self.show_frame(composite, ax)
+        ls= [self.sample.channel_to_protein[x] for x in self.channels],
+        lc=[self.sample.channel_to_color[x] for x in self.channels]
+        self.rainbow_text(0.03,.02,ls,lc,size=self.fontsize,ax=ax)
+
+
+    def make_composite(self):
+        shapes = [x.shape for x in self.color_frames]
         if len(set(shapes)) > 1:
             return None
-        result = np.nansum(np.stack(cframes),axis=0)
+        result = np.nansum(np.stack(self.color_frames),axis=0)
         return result
 
     def show_frame(self,frame,ax):
@@ -81,13 +107,16 @@ class ProjPlotter:
         if frame is None:
             return
         ax.imshow(frame,interpolation=interp,vmin=0, vmax=255, aspect='equal') 
+        self.color_frames.append(frame)
+
     
     def rainbow_text(self,x,y,ls,lc,ax,**kw):
         t = ax.transAxes
-        fig = self.plt.gcf()
+        fig = plt.gcf()
+
         for i,b in enumerate(zip(ls,lc)):
             s,c = b
-            text = self.plt.text(x,y,s,color=c, transform=t,**kw)
+            text = plt.text(x,y,s,color=c, transform=t, **kw)
             text.draw(fig.canvas.get_renderer())
             ex = text.get_window_extent()
             t = transforms.offset_copy(text._transform, x=ex.width, units='dots')
@@ -117,10 +146,12 @@ class ProjPlotter:
         self._calc_figsize()
         self._calc_fontsize()
         ncols,nrows = self.plotshape
-        self.fig = self.plt.figure(dpi=self.ppi,figsize=self.figsize)
-        self.gs = self.GridSpec(ncols=ncols, nrows=nrows,wspace=0.01,hspace=0.01)
+        self.fig = plt.figure(dpi=self.ppi,figsize=self.figsize)
+        self.gs = GridSpec(ncols=ncols, nrows=nrows,wspace=0.01,hspace=0.01)
         l, t, r, b = 0, .9, 1, 0 
         self.gs.update(left=l, top=t, right=r, bottom=b)
+        self.fig.suptitle(self.fig_folder,fontsize=self.fontsize)
+
 
     def yield_subplot(self,col):
         try:
@@ -131,13 +162,12 @@ class ProjPlotter:
         ax1.axis('off')
         return ax1
 
-    def save_fig(f):
-
+    def save_fig(self):
         try:
-            self.fig.savefig(f)
+            self.fig.savefig(self.fig_out)
         except:
             try:
-                fig.savefig(f'{f}-01')
+                self.fig.savefig(f'{self.fig_out}-01')
             except Exception as e:
                 print(e)
                 pass
