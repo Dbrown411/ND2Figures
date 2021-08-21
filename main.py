@@ -7,7 +7,7 @@ from plotting import *
 from nd2merger import *
 from findfiles import *
 
-import os,argparse
+import os,argparse,json
 import imageio
 import numpy as np
 import cv2 as cv2
@@ -62,13 +62,16 @@ def framestack_to_vol(framestack):
         vol[i,:,:] = frame
     return vol
 
-def get_projection(vol,method='mean'):
-    meth_map = {'mean':lambda x: np.nanmean(x[0:,:,:],axis=0,dtype=np.uint16),
+def get_projection(vol,method='sum'):
+    meth_map = {'mean':lambda x: np.nanmean(x[0:,:,:],axis=0,dtype=np.int32),
             'med':lambda x: np.nanmedian(x[0:,:,:],axis=0),
             'max':lambda x: np.nanmax(x[0:,:,:],axis=0),
-            'sum':lambda x: np.nansum(x[0:,:,:],axis=0,dtype=np.uint16)
+            'sum':lambda x: np.nansum(x[0:,:,:],axis=0,dtype=np.int32),
     }
-    return meth_map[method](vol)
+    img = np.int32(vol)
+    proj = meth_map[method](img)
+    proj = np.clip(proj, 0, 65535)
+    return np.uint16(proj)
 
 def plot_result(image, background):
     fig, ax = plt.subplots(nrows=1, ncols=3)
@@ -185,6 +188,7 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
             plotter.fig_folder = fig_path
             plotter.sample = sample
             named_channels = sample.named_channels
+            chans = []
             for i,(c,fstack) in enumerate(named_channels):
                 projection_type = channel_to_proj_map[c]
                 channel_outname = f'{sample.name}-{c}nm-{projection_type.upper()}'
@@ -204,6 +208,9 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
                         proj, fgbg = analyze_fstack(fstack,projection_type,calc_proj)
 
                     plotter.set_channel(c,proj)
+                    chans.append(c)
+            print(chans)
+            plotter.plot()
 
             if create_fig:
                 plotter.plot_composite()
@@ -215,6 +222,9 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
             plt.close()
 
 if __name__=='__main__':
+    curdir = f"{os.path.split(os.path.realpath(__file__))[0]}"
+    previousFolderPath = f"{curdir}{os.sep}cache"
+    LASTDIR = f"{previousFolderPath}{os.sep}LASTDIRECTORY.txt"
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--clear', help="Clear previous exports",
@@ -228,19 +238,28 @@ if __name__=='__main__':
     parser.add_argument('--default', help="use default path",
                                     default=False,
                                     action='store_true')
+    parser.add_argument('--repeat', help="use same path as previous",
+                                    default=False,
+                                    action='store_true')
     args = parser.parse_args()                     
-
+    
     desktop = rf"D:"
     directory = rf"{desktop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
-    if not args.default:
+    if args.repeat:
+        try:
+            with open(LASTDIR, mode='r') as f:
+                directory = json.load(f)
+                print(directory)
+        except:
+            pass
+    elif not args.default:
         from tkinter import filedialog
         from tkinter import *
         root = Tk()
         root.withdraw()
-        curdir = f"{os.path.split(os.path.realpath(__file__))[0]}"
         folder_selected = filedialog.askdirectory(parent=root,
-                                  initialdir=curdir,
-                                  title='Select directory with .nd2 Files')
+                                initialdir=curdir,
+                                title='Select directory with .nd2 Files')
         if folder_selected != '':
             directory = folder_selected
     
@@ -255,12 +274,14 @@ if __name__=='__main__':
                     }
 
     channel_to_proj_map = {
-                            '405':'mean',
-                            '488':'mean',
-                            '561':'mean',
-                            '640':'mean'
+                            '405':'max',
+                            '488':'sum',
+                            '561':'sum',
+                            '640':'sum'
                             }
 
+    with open(LASTDIR, mode='w') as f:
+        json.dump(directory,f)
     main(directory,clear=args.clear,groupby=(0,2),identify=(0,6),disp=args.show)
     
 

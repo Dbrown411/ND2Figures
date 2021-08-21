@@ -5,6 +5,7 @@ from matplotlib import transforms
 from matplotlib.pyplot import GridSpec
 from matplotlib_scalebar.scalebar import ScaleBar
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as PathEffects
 
 normalize_frame = lambda x: cv2.normalize(x, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 class SamplePlotter:
@@ -12,7 +13,7 @@ class SamplePlotter:
         app = wx.App(False) # the wx.App object must be created first.    
         self.ppi = wx.Display().GetPPI()[0]
         self.dispPPI = self.ppi*0.75
-        self.fig_ext = '.png'
+        self.fig_ext = '.tif'
     @property
     def sample(self):
         return self._sample
@@ -20,13 +21,13 @@ class SamplePlotter:
     def sample(self,sample):
         self._sample = sample
         self.color_frames = []
-
+        self.color_data = []
         if sample is None:
             return
         
         self.sample_name = sample.name
-        figname = f'{self.sample_name}{self.fig_ext}'
-        self.fig_out = f"{self.fig_folder}{os.sep}{figname}"
+        self.figname = f'{self.sample_name}{self.fig_ext}'
+        self.fig_out = f"{self.fig_folder}{os.sep}{self.figname}"
         num_subplots = len(sample.channels)
         self.channels = sample.channels
         if num_subplots>1:
@@ -57,8 +58,16 @@ class SamplePlotter:
 
     ##Data (u16) to Frame (u8 RGB)
     def set_channel(self,c,data):
-        color_frame = self.projection_to_frame(data,self.sample.channel_to_color[c])
+        color_16 = self.gray_to_color(data,self.sample.channel_to_color[c])
+        self.color_data.append(color_16)
+
+    def plot_channel(self,c,normalize=True,norm_max = 255):
+        
         subplot_num = self.sample.channel_order[c]
+        color_frame = self.color_data[subplot_num]
+        if normalize:
+            color_frame = cv2.normalize(color_frame, None, 0, norm_max, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
         ax = self.yield_subplot(subplot_num)
         if subplot_num==0:
             self.ax0 = ax
@@ -66,11 +75,27 @@ class SamplePlotter:
         ls = [self.sample.channel_to_protein[c]]
         lc = [self.sample.channel_to_color[c]]
         self.rainbow_text(0.03,.02,ls,lc,size=self.fontsize,ax=ax)
+        self.color_frames.append(color_frame)
 
+    def plot(self,normalize=('488','561','640')):
+        channel_norm = {k:255 for k in self.sample.channel_order.keys()}
+        
+        indices = [(c,self.sample.channel_order[c]) for c in normalize if c in self.sample.channel_order.keys()]
+        if len(indices)>1:
+            normalizing = [(c,self.color_data[i]) for c,i in indices]
+            norm_against = [(c,np.max(x)) for c,x in normalizing]
+            c,maxes = zip(*norm_against)
+            overall_max = np.max(maxes)
+            norm_against = [(c,int(np.round((np.divide(x,overall_max)))*255)) for c,x in norm_against]
+            for c,m in norm_against:
+                channel_norm[c]=m
+
+        for c,i in self.sample.channel_order.items():
+            self.plot_channel(c,normalize=True,norm_max = channel_norm[c])
 
     def gray_to_color(self,frame,color='g'):
         cmap = {"r":-2,'g':-1,'b':0}
-        dst = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        dst = np.stack((frame,)*3,axis=-1)
         dst[:,:,:2] = 0
         dst = np.roll(dst,cmap[color],axis=2)
         return dst
@@ -84,6 +109,7 @@ class SamplePlotter:
     def plot_composite(self):
         self.ax0.add_artist(self.scalebar)
         if len(self.color_frames)>3:
+            print('too many channels')
             return None
         composite = self.make_composite()
 
@@ -106,7 +132,6 @@ class SamplePlotter:
         if frame is None:
             return
         ax.imshow(frame,interpolation=interp,vmin=0, vmax=255, aspect='equal') 
-        self.color_frames.append(frame)
 
     
     def rainbow_text(self,x,y,ls,lc,ax,**kw):
@@ -116,6 +141,8 @@ class SamplePlotter:
         for i,b in enumerate(zip(ls,lc)):
             s,c = b
             text = plt.text(x,y,s,color=c, transform=t, **kw)
+            text.set_path_effects([PathEffects.withStroke(linewidth=4, foreground='k')])
+
             text.draw(fig.canvas.get_renderer())
             ex = text.get_window_extent()
             t = transforms.offset_copy(text._transform, x=ex.width, units='dots')
@@ -149,7 +176,7 @@ class SamplePlotter:
         self.gs = GridSpec(ncols=ncols, nrows=nrows,wspace=0.01,hspace=0.01)
         l, t, r, b = 0, .9, 1, 0 
         self.gs.update(left=l, top=t, right=r, bottom=b)
-        self.fig.suptitle(self.fig_folder,fontsize=self.fontsize)
+        self.fig.suptitle(self.figname[:-4],fontsize=self.fontsize)
 
     
     def yield_subplot(self,col):
