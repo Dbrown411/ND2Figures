@@ -62,7 +62,7 @@ def framestack_to_vol(framestack):
         vol[i,:,:] = frame
     return vol
 
-def get_projection(vol,method='sum'):
+def get_projection(vol,method='mean'):
     meth_map = {'mean':lambda x: np.nanmean(x[0:,:,:],axis=0,dtype=np.int32),
             'med':lambda x: np.nanmedian(x[0:,:,:],axis=0),
             'max':lambda x: np.nanmax(x[0:,:,:],axis=0),
@@ -87,8 +87,6 @@ def plot_result(image, fg, bg):
     fg_frame = normalize_frame(fg,immax)
     image_frame = normalize_frame(image,immax)
 
-    print(np.max(bg_frame))
-    print(np.max(image_frame))
     ax[0].imshow(bg_frame, cmap='Greens',vmin=0,vmax=immax)
     ax[0].set_title('Background')
     ax[0].axis('off')
@@ -103,6 +101,7 @@ def plot_result(image, fg, bg):
     ax[2].axis('off')
 
     fig.tight_layout()
+    return fig
 
 def filter_vol(vol):
     radz = 5
@@ -139,11 +138,12 @@ def identify_foreground(img):
     return th4
 
 ##Main data analysis pipeline
-def analyze_fstack(vol,proj_type,calc_proj):
-    if not calc_proj:
-        return
+def analyze_fstack(vol,proj_type,offset=True):
 
     proj = get_projection(vol,proj_type)
+    if not offset:
+        return proj,()
+
     frame = normalize_frame(proj)
 
     mask = identify_foreground(frame)
@@ -167,7 +167,7 @@ def write_proj(proj,path,filename,ext='.tif'):
 
 
     
-def main(directory,clear=True,groupby=None,identify=None,disp=False):
+def main(directory,clear=True,groupby=None,identify=None,disp=False,offset=True):
     if disp:
         mpl.use("Qt5Agg")
     else:
@@ -185,6 +185,8 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
 
     plotter = SamplePlotter()
     folder_count = 0
+    samples = {}
+    channel_maxes = {}
     for folder in foldersWithData:
         folder_count+=1
 
@@ -197,43 +199,59 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False):
         print('--'*10)
 
         for group in file_groups:
-            sample = ND2Accumulator(group,identify,groupby)
-            sample.folder = folder
+            try:
+                sample = ND2Accumulator(group,identify,groupby)
+                sample.folder = folder
+                plotter.fig_folder = fig_path
+                plotter.sample = sample
+
+                named_channels = sample.named_channels
+                chans = []
+                for i,(c,fstack) in enumerate(named_channels):
+                    projection_type = channel_to_proj_map[c]
+                    channel_outname = f'{sample.name}-{c}nm'
+                    projection_outname = f"{channel_outname}-{projection_type.upper()}"
+                    if export_flags['raw']:
+                        imageio.mimwrite(f'{raw_path}{os.sep}{channel_outname}.tiff',fstack)
+                    vol = framestack_to_vol(fstack)
+                    ##Point at which custom analysis can be performed
+                    ##Function should take a 3d np.vol of uint16 and return a 2d array of uint16 for display
+                    ##
+                    proj, fgbg = analyze_fstack(vol,projection_type,offset=offset)
+                    try:
+                        if channel_maxes[c]<np.max(proj):
+                            channel_maxes[c] = np.max(proj)
+                    except:
+                        channel_maxes[c] = np.max(proj)
+
+                    if offset:
+                        fig_fgbg = plot_result(proj,fgbg[0],fgbg[1])
+                        fig_fgbg.savefig(f"{plotter.fig_out}-FGBG.png")
+                        plt.close(fig_fgbg)
+                    write_proj(proj,proj_path,projection_outname)
+                    chans.append((c,f"{proj_path}{os.sep}{projection_outname}.tif"))
+                samples[sample] = (fig_path,chans)
+            except Exception as e:
+                print(e)
+                continue
+    if create_fig:
+        plotter.channel_maxes = channel_maxes
+        for sample,(fig_path,channels) in samples.items():
             plotter.fig_folder = fig_path
             plotter.sample = sample
-            named_channels = sample.named_channels
-            chans = []
-            for i,(c,fstack) in enumerate(named_channels):
-                projection_type = channel_to_proj_map[c]
-                channel_outname = f'{sample.name}-{c}nm-{projection_type.upper()}'
-                if export_flags['raw']:
-                    imageio.mimwrite(f'{raw_path}{os.sep}{channel_outname}.tiff',fstack)
-                vol = framestack_to_vol(fstack)
-                ##Point at which custom analysis can be performed
-                ##Function should take a 3d np.vol of uint16 and return a 2d array of uint16 for display
-                ##
-                proj, fgbg = analyze_fstack(vol,projection_type,calc_proj)
-                plot_result(proj,fgbg[0],fgbg[1])
+            plotter.init_plot()
+            for c,projpath in channels:
+                proj = cv2.imread(projpath,cv2.IMREAD_ANYDEPTH)
+                plotter.set_channel(c,proj)
+            plotter.plot()
+            plotter.plot_composite()
+            if disp:
+                plt.show()
+            if export_flags['figure']:
+                plotter.save_fig()
 
-                if export_flags['proj']:
-                    write_proj(proj,proj_path,channel_outname)
-                if create_fig:
-                    if not calc_proj:
-                        proj, fgbg = analyze_fstack(fstack,projection_type,calc_proj)
-                
-                    plotter.set_channel(c,proj)
-                    chans.append(c)
-
-            if create_fig:
-                plotter.plot()
-                plotter.plot_composite()
-                if disp:
-                    plt.show()
-                if export_flags['figure']:
-                    plotter.save_fig()
-
-            plt.close()
-
+            plt.close('all')
+            print(samples)
 if __name__=='__main__':
     curdir = f"{os.path.split(os.path.realpath(__file__))[0]}"
     previousFolderPath = f"{curdir}{os.sep}cache"
@@ -254,16 +272,19 @@ if __name__=='__main__':
     parser.add_argument('--repeat', help="use same path as previous",
                                     default=False,
                                     action='store_true')
+    parser.add_argument('--nooffset', help="Don't offset by auto-calculated background intensity",
+                                    default=False,
+                                    action='store_true')                                
     args = parser.parse_args()                     
     
     desktop = rf"D:"
     laptop = rf"C:\Users\dillo"
-    directory = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC\Confocal\Automated"
+    ihc_dir = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC"
+    directory = "{ihc_dir}{os.sep}Confocal\20210827"
     if args.repeat:
         try:
             with open(LASTDIR, mode='r') as f:
                 directory = json.load(f)
-                print(directory)
         except:
             pass
     elif not args.default:
@@ -272,7 +293,7 @@ if __name__=='__main__':
         root = Tk()
         root.withdraw()
         folder_selected = filedialog.askdirectory(parent=root,
-                                initialdir=curdir,
+                                initialdir=ihc_dir,
                                 title='Select directory with .nd2 Files')
         if folder_selected != '':
             directory = folder_selected
@@ -282,7 +303,7 @@ if __name__=='__main__':
     compile_all = True
 
     export_flags = {
-                    'raw':False,
+                    'raw':True,
                     'proj':True,
                     'figure':True
                     }
@@ -296,7 +317,7 @@ if __name__=='__main__':
 
     with open(LASTDIR, mode='w') as f:
         json.dump(directory,f)
-    main(directory,clear=args.clear,groupby=(0,2),identify=(0,6),disp=args.show)
+    main(directory,clear=args.clear,groupby=(0,2),identify=(0,6),disp=args.show,offset=not args.nooffset)
     
 
 

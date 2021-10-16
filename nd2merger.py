@@ -1,5 +1,9 @@
 from nd2reader import ND2Reader
-import os, json
+import os, json, re
+import numpy as np
+
+def closest(lst, K):
+    return lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
 
 def _check_all_folders_in_path(path):
     path_to_config = f"{path}{os.sep}channelmap.txt"
@@ -32,13 +36,44 @@ class ND2Accumulator:
                         '561':'r',
                         '488':'g',
                         '405':'b'
-                        }  
+                        }
+        self.channel_standardization = {
+            0:'405',
+            1:'488',
+            2:'561',
+            3:'640'
+        }
 
     def set_sample_name(self,pattern):
         identifier_slice = self.identify if self.identify is not None else self.groupby if self.groupby is not None else (0,-1)
         sample_id = pattern[identifier_slice[0]:identifier_slice[1]]
         self.name = "_".join(sample_id)
-
+    def standardize_channels(self,channels_dict):
+        ##Standardize channel names
+        channels = list(channels_dict.keys())
+        standardization = {}
+        for i,x in enumerate(channels):
+            extracted_channel = None
+            substr = re.search(r'\d{3}', x)
+            if substr:
+                extracted_channel = substr.group(0)
+            if x in self.channel_to_protein.keys():
+                c = x
+            elif extracted_channel:
+                wavelengths = [int(y) for y in self.channel_to_protein.keys()]
+                c = str(closest(wavelengths,int(extracted_channel)))
+            elif np.any([y in x for y in self.channel_to_protein.keys()]):
+                for y in self.channel_to_protein.keys():
+                    if y in c:
+                        c = y
+                        break
+            else:
+                c = self.channel_standardization[i]
+            standardization[x] = c
+        for k,v in standardization.items():
+            channels_dict[v] = channels_dict[k]
+            del channels_dict[k]
+        return channels_dict
     def merge_nd2_to_dict(self,grouped_images):
         def set_axes_to_iterate(images):
             iteraxes = []
@@ -52,8 +87,9 @@ class ND2Accumulator:
         for i,(_,pattern,f) in enumerate(list(grouped_images[1])):
             if i==0:
                 self.set_sample_name(pattern)
-
+            print(f)
             with ND2Reader(f) as images:
+                # print(images.metadata)
                 channels = images.metadata['channels']
                 numChannels = len(channels)
                 set_axes_to_iterate(images)
@@ -79,10 +115,14 @@ class ND2Accumulator:
         
         ##get collection of data and merge
         self.metadata, channels_dict = self.merge_files(collected_channels_dicts)
-        c,first_channel = next(iter((channels_dict.items())))
-        self.framesize = first_channel[0].shape
+
+        channels_dict = self.standardize_channels(channels_dict)
+        
 
         channels = list(channels_dict.keys())
+        _,first_channel = next(iter((channels_dict.items())))
+        self.framesize = first_channel[0].shape
+
         channels.sort(reverse=True)
         self.channels = channels
         self.channel_order = {c:i for i,c in enumerate(channels)}

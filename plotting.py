@@ -16,11 +16,22 @@ def find_frame_maxes(frames = []):
     norm_against = [int(np.round((np.divide(x,overall_max)*255))) for x in norm_against]
     return norm_against
 class SamplePlotter:
-    def __init__(self):
+    def __init__(self,norm_across_samples=True,norm_across_wavelengths = True):
         app = wx.App(False) # the wx.App object must be created first.    
         self.ppi = wx.Display().GetPPI()[0]
         self.dispPPI = self.ppi*0.75
-        self.fig_ext = '.tif'
+        self.fig_ext = '.png'
+        self.norm_across_samples = norm_across_samples
+        self.norm_across_wavelengths = norm_across_wavelengths
+        self.counter_channel = '405'
+    @property
+    def channel_maxes(self):
+        return self._channel_maxes
+
+    @channel_maxes.setter
+    def channel_maxes(self,chan_maxes):
+        self._channel_maxes = chan_maxes
+
     @property
     def sample(self):
         return self._sample
@@ -33,7 +44,7 @@ class SamplePlotter:
             return
         
         self.sample_name = sample.name
-        self.figname = f'{self.sample_name}{self.fig_ext}'
+        self.figname = f'{self.sample_name}'
         self.fig_out = f"{self.fig_folder}{os.sep}{self.figname}"
         num_subplots = len(sample.channels)
         self.channels = sample.channels
@@ -41,8 +52,7 @@ class SamplePlotter:
             num_subplots+=1
         self.num_subplots = num_subplots
         self.framesize = sample.framesize
-        self.set_plot()
-        self.make_scalebar(self.sample.metadata)
+
 
     @property
     def fig_folder(self):
@@ -51,6 +61,9 @@ class SamplePlotter:
     def fig_folder(self,fig_folder):
         self._fig_folder = fig_folder
 
+    def init_plot(self):
+        self.set_plot()
+        self.make_scalebar(self.sample.metadata)
 
     ##Plotting Functions
     def make_scalebar(self,metadata):
@@ -66,13 +79,43 @@ class SamplePlotter:
     def set_channel(self,c,data):
         color_16 = self.gray_to_color(data,self.sample.channel_to_color[c])
         self.color_data.append(color_16)
+    
+    def calculate_normmax(self):
+        normalize=('488','561','640')
+        channel_norm = {k:255 for k in self.sample.channel_order.keys()}
+        if (self.norm_across_samples)&(self.norm_across_wavelengths):
+            maxes = [x for c,x in self.channel_maxes.items() if c != self.counter_channel]
+            overall_max = np.max(maxes)
+            for c,v in channel_norm.items():
+                if c==self.counter_channel:
+                    continue
+                subplot_num = self.sample.channel_order[c]
+                cur_max = np.max(self.color_data[subplot_num])
+                channel_norm[c] = int(np.round((np.divide(cur_max,overall_max)*255)))
+        elif self.norm_across_samples:
+            for c,v in self.channel_maxes.items():
+                subplot_num = self.sample.channel_order[c]
+                cur_max = np.max(self.color_data[subplot_num])
+                channel_norm[c] = int(np.round((np.divide(cur_max,v)*255)))
+        elif self.norm_across_wavelengths:
+            indices = [(c,self.sample.channel_order[c]) for c in normalize if c in self.sample.channel_order.keys()]
+            if len(indices)>1:
+                normalizing = [(c,self.color_data[i]) for c,i in indices]
+                norm_against = [(c,np.max(x)) for c,x in normalizing]
+                c,maxes = zip(*norm_against)
+                overall_max = np.max(maxes)
+                norm_against = [(c,int(np.round((np.divide(x,overall_max)*255)))) for c,x in norm_against]
+                for c,m in norm_against:
+                    channel_norm[c]=m
+        self.channel_norms = channel_norm
 
-    def plot_channel(self,c,normalize=True,norm_max = 255):
-        
+    def plot_channel(self,c):
         subplot_num = self.sample.channel_order[c]
         color_frame = self.color_data[subplot_num]
-        if normalize:
-            color_frame = cv2.normalize(color_frame, None, 0, norm_max, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        channel_max = self.channel_norms[c]
+        print(self.channel_norms)
+        print(channel_max)
+        color_frame = cv2.normalize(color_frame, None, 0, channel_max, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
         ax = self.yield_subplot(subplot_num)
         if subplot_num==0:
@@ -83,21 +126,11 @@ class SamplePlotter:
         self.rainbow_text(0.03,.02,ls,lc,size=self.fontsize,ax=ax)
         self.color_frames.append(color_frame)
 
-    def plot(self,normalize=('488','561','640')):
-        channel_norm = {k:255 for k in self.sample.channel_order.keys()}
-        
-        indices = [(c,self.sample.channel_order[c]) for c in normalize if c in self.sample.channel_order.keys()]
-        if len(indices)>1:
-            normalizing = [(c,self.color_data[i]) for c,i in indices]
-            norm_against = [(c,np.max(x)) for c,x in normalizing]
-            c,maxes = zip(*norm_against)
-            overall_max = np.max(maxes)
-            norm_against = [(c,int(np.round((np.divide(x,overall_max)*255)))) for c,x in norm_against]
-            for c,m in norm_against:
-                channel_norm[c]=m
+    def plot(self):
+        self.calculate_normmax()
 
         for c,i in self.sample.channel_order.items():
-            self.plot_channel(c,normalize=True,norm_max = channel_norm[c])
+            self.plot_channel(c)
 
     def gray_to_color(self,frame,color='g'):
         cmap = {"r":-2,'g':-1,'b':0}
@@ -196,10 +229,12 @@ class SamplePlotter:
 
     def save_fig(self):
         try:
-            self.fig.savefig(self.fig_out)
+            figout = f"{self.fig_out}{self.fig_ext}"
+            self.fig.savefig(figout)
         except:
             try:
-                self.fig.savefig(f'{self.fig_out}-01')
+                figout = f"{self.fig_out}-01{self.fig_ext}"
+                self.fig.savefig(figout)
             except Exception as e:
                 print(e)
                 pass
