@@ -1,6 +1,7 @@
 import cv2 as cv2
 import numpy as np
-import wx, json, os
+from wx import App, Display
+import os
 from matplotlib import transforms
 from matplotlib.pyplot import GridSpec
 from matplotlib_scalebar.scalebar import ScaleBar
@@ -16,14 +17,14 @@ def find_frame_maxes(frames = []):
     norm_against = [int(np.round((np.divide(x,overall_max)*255))) for x in norm_against]
     return norm_against
 class SamplePlotter:
-    def __init__(self,norm_across_samples=True,norm_across_wavelengths = True):
-        app = wx.App(False) # the wx.App object must be created first.    
-        self.ppi = wx.Display().GetPPI()[0]
+    def __init__(self,norm_across_samples=True,norm_across_wavelengths = False,counterstain='405'):
+        app = App(False) # the wx.App object must be created first.    
+        self.ppi = Display().GetPPI()[0]
         self.dispPPI = self.ppi*0.75
         self.fig_ext = '.png'
         self.norm_across_samples = norm_across_samples
         self.norm_across_wavelengths = norm_across_wavelengths
-        self.counter_channel = '405'
+        self.counter_channel = counterstain
     @property
     def channel_maxes(self):
         return self._channel_maxes
@@ -46,6 +47,7 @@ class SamplePlotter:
         self.sample_name = sample.name
         self.figname = f'{self.sample_name}'
         self.fig_out = f"{self.fig_folder}{os.sep}{self.figname}"
+        self.offset_out = f"{self.fig_folder}{os.sep}OffsetCorrection{os.sep}{self.figname}"
         num_subplots = len(sample.channels)
         self.channels = sample.channels
         if num_subplots>1:
@@ -79,7 +81,11 @@ class SamplePlotter:
     def set_channel(self,c,data):
         color_16 = self.gray_to_color(data,self.sample.channel_to_color[c])
         self.color_data.append(color_16)
-    
+    def get_max(self,data):
+        perc = 100-0.2
+        result = np.percentile(np.ravel(data),perc,interpolation='nearest')
+        return result
+
     def calculate_normmax(self):
         normalize=('488','561','640')
         channel_norm = {k:255 for k in self.sample.channel_order.keys()}
@@ -90,18 +96,20 @@ class SamplePlotter:
                 if c==self.counter_channel:
                     continue
                 subplot_num = self.sample.channel_order[c]
-                cur_max = np.max(self.color_data[subplot_num])
+                cur_max = self.get_max(self.color_data[subplot_num])
                 channel_norm[c] = int(np.round((np.divide(cur_max,overall_max)*255)))
         elif self.norm_across_samples:
             for c,v in self.channel_maxes.items():
+                if c==self.counter_channel:
+                    continue
                 subplot_num = self.sample.channel_order[c]
-                cur_max = np.max(self.color_data[subplot_num])
+                cur_max = self.get_max(self.color_data[subplot_num])
                 channel_norm[c] = int(np.round((np.divide(cur_max,v)*255)))
         elif self.norm_across_wavelengths:
             indices = [(c,self.sample.channel_order[c]) for c in normalize if c in self.sample.channel_order.keys()]
             if len(indices)>1:
                 normalizing = [(c,self.color_data[i]) for c,i in indices]
-                norm_against = [(c,np.max(x)) for c,x in normalizing]
+                norm_against = [(c,self.get_max(x)) for c,x in normalizing]
                 c,maxes = zip(*norm_against)
                 overall_max = np.max(maxes)
                 norm_against = [(c,int(np.round((np.divide(x,overall_max)*255)))) for c,x in norm_against]

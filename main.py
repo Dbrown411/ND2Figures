@@ -12,7 +12,6 @@ import imageio
 import numpy as np
 import cv2 as cv2
 from skimage import restoration
-
 import matplotlib as mpl
 
 """
@@ -81,6 +80,8 @@ def find_frame_maxes(frames = []):
     return norm_against
 
 def plot_result(image, fg, bg):
+    fg = np.nan_to_num(fg)
+    bg = np.nan_to_num(bg)
     immax,bgmax = find_frame_maxes([image,bg])
     fig, ax = plt.subplots(nrows=1, ncols=3)
     bg_frame = normalize_frame(bg,bgmax)
@@ -128,14 +129,28 @@ def offset_projection(proj,new_0):
     offset_proj = cv2.normalize(newImage, None, 0, newmax16, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
     return offset_proj
 
+def write_proj(proj,path,filename,ext='.tif'):
+    cv2.imwrite(f"{path}{os.sep}{filename}{ext}", proj)
+
+def get_max(data,saturated:int=0.2):
+    perc = 100-saturated
+    result = np.percentile(np.ravel(data),perc,interpolation='nearest')
+    return result
+
 def identify_foreground(img):
-    blur = cv2.GaussianBlur(img,(5,5),0)
-    ret3,th3 = cv2.threshold(blur,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    blur = cv2.GaussianBlur(img,(7,7),0)
+    max_val = get_max(blur,saturated=70)
+    blur = np.clip(blur, 0, max_val)
+    thresh = cv2.normalize(blur, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    thresh = cv2.adaptiveThreshold(thresh,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,7,1)
     kernel = np.ones((5,5),np.uint8)    
-    th4 = cv2.dilate(th3,kernel,iterations = 5)
-    th4 = cv2.morphologyEx(th4, cv2.MORPH_CLOSE, kernel,iterations=10)
-    th4 = cv2.dilate(th4,kernel,iterations = 5*int(max(img.shape)/512))
-    return th4
+    thresh = cv2.erode(thresh,kernel,iterations = 1)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel,iterations=2)
+    kernel = np.ones((10,10),np.uint8)    
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel,iterations=1)
+    kernel = np.ones((2,2),np.uint8)    
+    thresh = cv2.dilate(thresh,kernel,iterations = 5*int(max(img.shape)/512))
+    return thresh
 
 ##Main data analysis pipeline
 def analyze_fstack(vol,proj_type,offset=True):
@@ -143,27 +158,29 @@ def analyze_fstack(vol,proj_type,offset=True):
     proj = get_projection(vol,proj_type)
     if not offset:
         return proj,()
+    # frame = normalize_frame(proj)
 
-    frame = normalize_frame(proj)
+    mask_fg = identify_foreground(proj)
 
-    mask = identify_foreground(frame)
-    mask16 = cv2.normalize(mask, None, 0, 65535, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
-    foreground = cv2.bitwise_and(proj, mask16)
+    mask_bg = cv2.bitwise_not(mask_fg)
+    mask16_fg = cv2.normalize(mask_fg, None, 0, 65535, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
+    mask16_bg = cv2.normalize(mask_bg, None, 0, 65535, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
+    foreground = cv2.bitwise_and(proj, mask16_fg)
+    foreground = np.array(foreground, dtype=float)
+    foreground[foreground==0] = np.nan
+    background = cv2.bitwise_and(proj, mask16_bg)
+    background = np.array(background, dtype=float)
+    background[background==0] = np.nan
 
-    mask = cv2.bitwise_not(mask)
-    mask16 = cv2.normalize(mask, None, 0, 65535, cv2.NORM_MINMAX, dtype=cv2.CV_16U)
-    background = cv2.bitwise_and(proj, mask16)
+    mean_background = np.nanmean(background)
 
-    mean_background = np.mean(background)
     offset = int(round(mean_background*1.5))
     if proj_type=='max':
         offset*=2
     offset_proj  = offset_projection(proj,offset)
-    return offset_proj, (foreground,background)
 
+    return offset_proj, (foreground,background), (mask_fg,mask_bg)
 
-def write_proj(proj,path,filename,ext='.tif'):
-    cv2.imwrite(f"{path}{os.sep}{filename}{ext}", proj)
 
 
     
@@ -179,61 +196,65 @@ def main(directory,clear=True,groupby=None,identify=None,disp=False,offset=True)
 
     ##Clear previous results
     if compile_all:
-        raw_path,proj_path, fig_path = create_folders(directory,export_flags,clear=clear)
+        raw_path,proj_path, fig_path,offset_path = create_folders(directory,export_flags,clear=clear)
     elif clear:
         [create_folders(folder,export_flags,clear=True) for folder in foldersWithData]
 
-    plotter = SamplePlotter()
+    plotter = SamplePlotter(norm_across_samples=True,norm_across_wavelengths = False)
     folder_count = 0
     samples = {}
     channel_maxes = {}
+    image_outcomes_comp = {}
+
     for folder in foldersWithData:
         folder_count+=1
 
         if not compile_all:
-            raw_path,proj_path, fig_path = create_folders(folder,export_flags)
+            raw_path,proj_path, fig_path,offset_path = create_folders(folder,export_flags)
         file_groups = match_scans(folder,groupby = groupby)
         print('--'*10)
         print('--'*10)
         print(f'Folder {folder_count}:\n{folder}')
         print('--'*10)
-
         for group in file_groups:
-            try:
-                sample = ND2Accumulator(group,identify,groupby)
-                sample.folder = folder
-                plotter.fig_folder = fig_path
-                plotter.sample = sample
-
-                named_channels = sample.named_channels
-                chans = []
-                for i,(c,fstack) in enumerate(named_channels):
-                    projection_type = channel_to_proj_map[c]
-                    channel_outname = f'{sample.name}-{c}nm'
-                    projection_outname = f"{channel_outname}-{projection_type.upper()}"
-                    if export_flags['raw']:
-                        imageio.mimwrite(f'{raw_path}{os.sep}{channel_outname}.tiff',fstack)
-                    vol = framestack_to_vol(fstack)
-                    ##Point at which custom analysis can be performed
-                    ##Function should take a 3d np.vol of uint16 and return a 2d array of uint16 for display
-                    ##
-                    proj, fgbg = analyze_fstack(vol,projection_type,offset=offset)
-                    try:
-                        if channel_maxes[c]<np.max(proj):
-                            channel_maxes[c] = np.max(proj)
-                    except:
-                        channel_maxes[c] = np.max(proj)
-
-                    if offset:
-                        fig_fgbg = plot_result(proj,fgbg[0],fgbg[1])
-                        fig_fgbg.savefig(f"{plotter.fig_out}-FGBG.png")
-                        plt.close(fig_fgbg)
-                    write_proj(proj,proj_path,projection_outname)
-                    chans.append((c,f"{proj_path}{os.sep}{projection_outname}.tif"))
-                samples[sample] = (fig_path,chans)
-            except Exception as e:
-                print(e)
-                continue
+            sample = ND2Accumulator(group,identify,groupby)
+            sample.folder = folder
+            plotter.fig_folder = fig_path
+            plotter.sample = sample
+            named_channels = sample.named_channels
+            chans = []
+            image_outcomes = {}
+            for i,(c,fstack) in enumerate(named_channels):
+                projection_type = channel_to_proj_map[c]
+                channel_outname = f'{sample.name}-{c}nm'
+                projection_outname = f"{channel_outname}-{projection_type.upper()}"
+                if export_flags['raw']:
+                    imageio.mimwrite(f'{raw_path}{os.sep}{channel_outname}.tiff',fstack)
+                vol = framestack_to_vol(fstack)
+                ##Point at which custom analysis can be performed
+                ##Function should take a 3d np.vol of uint16 and return a 2d array of uint16 for display
+                ##
+                proj, (fg, bg), (mask_fg,mask_bg) = analyze_fstack(vol,projection_type,offset=offset)
+                image_outcomes[c] = {'fg':np.nanmean(fg),'bg':np.nanmean(bg)}
+                top_percentile = get_max(proj)
+                try:
+                    if channel_maxes[c]<top_percentile:
+                        channel_maxes[c] = top_percentile
+                except:
+                    channel_maxes[c] = top_percentile
+                if offset&export_flags['offset']:
+                    fig_fgbg = plot_result(proj,fg,bg)
+                    fig_fgbg.savefig(f"{plotter.offset_out}-FGBG-{c}.png")
+                    plt.close(fig_fgbg)
+                write_proj(proj,proj_path,projection_outname)
+                # write_proj(mask_fg,proj_path,f"{projection_outname}-fg_mask")
+                
+                chans.append((c,f"{proj_path}{os.sep}{projection_outname}.tif"))
+            image_outcomes_comp[sample.name] = image_outcomes
+            samples[sample] = (fig_path,chans)
+    with open('analyzed.json','w') as fp:
+        json.dump(image_outcomes_comp,fp)
+        
     if create_fig:
         plotter.channel_maxes = channel_maxes
         for sample,(fig_path,channels) in samples.items():
@@ -279,7 +300,7 @@ if __name__=='__main__':
     
     desktop = rf"D:"
     laptop = rf"C:\Users\dillo"
-    ihc_dir = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Lab\Data\IHC"
+    ihc_dir = rf"{laptop}{os.sep}OneDrive - Georgia Institute of Technology\Thesis\Data\IHC"
     directory = "{ihc_dir}{os.sep}Confocal\20210827"
     if args.repeat:
         try:
@@ -305,20 +326,17 @@ if __name__=='__main__':
     export_flags = {
                     'raw':True,
                     'proj':True,
-                    'figure':True
+                    'figure':True,
+                    'offset':True
                     }
 
     channel_to_proj_map = {
                             '405':'max',
-                            '488':'sum',
-                            '561':'sum',
-                            '640':'sum'
+                            '488':'mean',
+                            '561':'mean',
+                            '640':'mean'
                             }
 
     with open(LASTDIR, mode='w') as f:
         json.dump(directory,f)
-    main(directory,clear=args.clear,groupby=(0,2),identify=(0,6),disp=args.show,offset=not args.nooffset)
-    
-
-
-
+    main(directory,clear=args.clear,groupby=(0,11),identify=(0,11),disp=args.show,offset=not args.nooffset)

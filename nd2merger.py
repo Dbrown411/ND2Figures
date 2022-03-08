@@ -1,4 +1,5 @@
 from nd2reader import ND2Reader
+from nd2reader.parser import Parser
 import os, json, re
 import numpy as np
 
@@ -61,18 +62,23 @@ class ND2Accumulator:
                 c = x
             elif extracted_channel:
                 wavelengths = [int(y) for y in self.channel_to_protein.keys()]
+                print(wavelengths)
                 c = str(closest(wavelengths,int(extracted_channel)))
+                print(c)
             elif np.any([y in x for y in self.channel_to_protein.keys()]):
                 for y in self.channel_to_protein.keys():
                     if y in c:
                         c = y
+                        print(c)
+                        print('breaking')
                         break
             else:
-                c = self.channel_standardization[i]
+                c = self.channel_standardization[0]
             standardization[x] = c
         for k,v in standardization.items():
-            channels_dict[v] = channels_dict[k]
-            del channels_dict[k]
+            if k != v:
+                channels_dict[v] = channels_dict[k]
+                del channels_dict[k]
         return channels_dict
     def merge_nd2_to_dict(self,grouped_images):
         def set_axes_to_iterate(images):
@@ -87,15 +93,17 @@ class ND2Accumulator:
         for i,(_,pattern,f) in enumerate(list(grouped_images[1])):
             if i==0:
                 self.set_sample_name(pattern)
-            print(f)
-            with ND2Reader(f) as images:
-                # print(images.metadata)
-                channels = images.metadata['channels']
-                numChannels = len(channels)
-                set_axes_to_iterate(images)
-                channels_dict = {channels[i]:[] for i in range(numChannels)}
-                for k,frame in enumerate(images):
-                    channels_dict[channels[k%numChannels]].append(frame)
+            try:
+                with ND2Reader(f) as images:
+                    channels = images.metadata['channels']
+                    numChannels = len(channels)
+                    set_axes_to_iterate(images)
+                    channels_dict = {channels[i]:[] for i in range(numChannels)}
+                    for k,frame in enumerate(images):
+                        channels_dict[channels[k%numChannels]].append(frame)
+            except Exception as e:
+                print(e)
+                continue
             collected_channels_dicts.append((images.metadata, channels_dict))
         return collected_channels_dicts
 
@@ -117,8 +125,7 @@ class ND2Accumulator:
         self.metadata, channels_dict = self.merge_files(collected_channels_dicts)
 
         channels_dict = self.standardize_channels(channels_dict)
-        
-
+    
         channels = list(channels_dict.keys())
         _,first_channel = next(iter((channels_dict.items())))
         self.framesize = first_channel[0].shape

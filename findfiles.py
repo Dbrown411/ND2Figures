@@ -7,7 +7,8 @@ def create_folders(folder,export_flags,clear=False):
     paths = {
         'raw':(export_flags['raw'],f"{folder}{os.sep}RawTifStacks"),
         'proj':(export_flags['proj'],f"{folder}{os.sep}16bitProjections"),
-        'figure':(export_flags['figure'],f"{folder}{os.sep}Figures")
+        'figure':(export_flags['figure'],f"{folder}{os.sep}Figures"),
+        'offset':(export_flags['offset'],f"{folder}{os.sep}Figures{os.sep}OffsetCorrection")
     }
     paths_out = []
     for type,(use,p) in paths.items():
