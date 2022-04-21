@@ -31,27 +31,31 @@ if __name__ == '__main__':
                         help="use same path as previous",
                         default=False,
                         action='store_true')
+    parser.add_argument('--no-fig',
+                        help="don't create png figure",
+                        default=False,
+                        action='store_true')
     parser.add_argument(
         '--nooffset',
         help="Don't offset by auto-calculated background intensity",
         default=False,
         action='store_true')
-    args = parser.parse_args()
-
+    kwargs = vars(parser.parse_args())
     directory = cc.ihc_dir
+    cc.create_fig = not kwargs['no_fig']
 
-    if args.repeat:
+    if kwargs["repeat"]:
         with open(cc.LASTDIR, mode='r') as f:
             val = json.load(f)
             directory = Path(val)
-    elif not args.default:
+    elif not kwargs["default"]:
         directory = get_user_path()
 
     with open(cc.LASTDIR, mode='w') as f:
         json.dump(directory.as_posix(), f)
     analyze_folder(directory,
-                   clear=args.clear,
-                   groupby=cc.groupby_slice,
-                   identify=cc.identifier_slice,
-                   disp=args.show,
-                   offset=not args.nooffset)
+                   clear=kwargs['clear'],
+                   groupby=None,
+                   identify=None,
+                   disp=kwargs['show'],
+                   offset=not kwargs['nooffset'])

@@ -11,20 +11,19 @@ import matplotlib as mpl
 from typing import Tuple
 from pathlib import Path
 from tqdm import tqdm
+import tifffile
 
 
-def initialize_folders(directory: Path, clear: bool,
-                       folders_with_data: list) -> ExportLocation:
-
-    ##Clear previous results
-    if cc.compile_all:
-        export_paths = create_folders(directory, cc.export_flags, clear=clear)
-    elif clear:
-        export_paths = [
-            create_folders(folder, cc.export_flags, clear=True)
-            for folder in folders_with_data
-        ][0]
+def initialize_folders(
+    directory: Path,
+    clear: bool,
+) -> ExportLocation:
+    export_paths = create_folders(directory, cc.export_flags, clear=clear)
     return export_paths
+
+
+def nd2_to_tiff():
+    pass
 
 
 def analyze_folder(directory: Path,
@@ -38,27 +37,22 @@ def analyze_folder(directory: Path,
     else:
         mpl.use("Agg")
     import matplotlib.pyplot as plt
-    folders_with_data = scan_data(directory)
 
-    export_locations = initialize_folders(directory, clear, folders_with_data)
+    folders_with_data = scan_data(directory)
+    export_locations = initialize_folders(directory, clear)
     plotter = SamplePlotter(norm_across_samples=True,
                             norm_across_wavelengths=False)
-    folder_count = 0
     samples = {}
     channel_maxes = {}
     image_outcomes_comp = {}
     unique_samples = []
     for folder in folders_with_data:
-        folder_count += 1
-
-        if not cc.compile_all:
-            export_locations = create_folders(folder, cc.export_flags)
-
         unique_samples.extend(match_scans(folder, groupby=groupby))
+
     if cc.show_progress:
-        pbar = tqdm(unique_samples[:2])
+        pbar = tqdm(list(reversed(unique_samples)))
     else:
-        pbar = unique_samples[:2]
+        pbar = reversed(unique_samples)
     for group in pbar:
         if cc.show_progress:
             pbar.set_description(group[-1][0].stem)
@@ -70,21 +64,44 @@ def analyze_folder(directory: Path,
         named_channels = sample.named_channels
         chans = []
         image_outcomes = {}
+        x, y = named_channels[0][1][0].shape
+        z = len(named_channels[0][1])
+        imgs = np.empty((z, x, y, 3))
+
+        def channel_to_rgb(c: str):
+            c = int(c)
+            if c > 580:
+                return 0
+            if c < 480:
+                return 2
+            return 1
+
+        for i, (c, fstack) in enumerate(named_channels):
+            color = channel_to_rgb(c)
+            imgs[:, :, :, color] = np.stack(fstack, axis=0)
+        if z == 1:
+            imgs = np.squeeze(imgs, axis=0)
+
+        if cc.export_flags['raw']:
+            tifffile.imsave(
+                export_locations.raw / f'{sample.name}-composite.tiff', imgs)
+
         for i, (c, fstack) in enumerate(named_channels):
             projection_type = cc.channel_to_proj_map[c]
             channel_outname = f'{sample.name}-{c}nm'
             projection_outname = f"{channel_outname}-{projection_type.upper()}"
-            if cc.export_flags['raw']:
-                imageio.mimwrite(
-                    export_locations.raw / f'{channel_outname}.tiff', fstack)
+            # if cc.export_flags['raw']:
+            #     imageio.mimwrite(
+            #         export_locations.raw / f'{channel_outname}.tiff', fstack)
             vol = framestack_to_vol(fstack)
             ##Point at which custom analysis can be performed
             ##Function should take a 3d np.vol of uint16 and return a 2d array of uint16 for display
             ##
-            proj, (fg, bg), (mask_fg,
-                             mask_bg) = analyze_fstack(vol,
-                                                       projection_type,
-                                                       offset=offset)
+            proj, (fg, bg), (mask_fg, mask_bg) = analyze_fstack(
+                vol,
+                projection_type,
+                offset=offset,
+                **{'label': channel_outname})
             image_outcomes[c] = {'fg': np.nanmean(fg), 'bg': np.nanmean(bg)}
             top_percentile = get_max(proj)
             try:
@@ -95,15 +112,13 @@ def analyze_folder(directory: Path,
             if offset & cc.export_flags['offset']:
                 fig_fgbg = plot_result(proj, fg, bg)
                 fig_fgbg.savefig(f"{plotter.offset_out}-FGBG-{c}.png")
-                # plt.show()
                 plt.close(fig_fgbg)
             write_proj(proj, export_locations.proj, projection_outname)
-
-            chans.append(
-                (c, export_locations.proj / f"{projection_outname}.tif"))
+            export_path = export_locations.proj / f"{projection_outname}.tif"
+            chans.append((c, export_path))
         image_outcomes_comp[sample.name] = image_outcomes
         samples[sample] = (export_locations.fig, chans)
-    with open('analyzed.json', 'w') as fp:
+    with open(export_locations.parent / 'analyzed.json', 'w') as fp:
         json.dump(image_outcomes_comp, fp)
 
     if cc.create_fig:
@@ -113,7 +128,7 @@ def analyze_folder(directory: Path,
             plotter.sample = sample
             plotter.init_plot()
             for c, projpath in channels:
-                proj = cv2.imread(projpath, cv2.IMREAD_ANYDEPTH)
+                proj = cv2.imread(projpath.as_posix(), cv2.IMREAD_ANYDEPTH)
                 plotter.set_channel(c, proj)
             plotter.plot()
             plotter.plot_composite()

@@ -4,6 +4,11 @@ import cv2 as cv2
 import numpy as np
 
 
+def write_proj(proj, path: Path, filename, ext='.tif'):
+    outpath = path / f"{filename}{ext}"
+    cv2.imwrite(outpath.as_posix(), proj)
+
+
 def _check_all_folders_in_path(path: Path) -> Path:
     channel_map = path / "channelmap.txt"
     if not channel_map.is_file():

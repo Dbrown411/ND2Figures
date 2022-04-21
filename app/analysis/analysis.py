@@ -1,30 +1,45 @@
-# from skimage import restoration
+from skimage import restoration
 import numpy as np
 import matplotlib.pyplot as plt
-
+from numpy.typing import NDArray
 from app.utilities import *
-from pathlib import Path
+import warnings
 
 
-def framestack_to_vol(framestack):
-    volume_shape = (len(framestack), framestack[0].shape[0],
-                    framestack[0].shape[1])
-    vol = np.empty(volume_shape, dtype=np.uint16)
-    for i, frame in enumerate(framestack):
-        vol[i, :, :] = frame
+def thresh_plot(im, label: str = ''):
+    fig, ax = plt.subplots()
+    ax.imshow(im)
+    if label != '':
+        plt.suptitle(label)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        plt.show()
+        plt.close()
+    return fig, ax
+
+
+def framestack_to_vol(framestack: "list[NDArray]") -> "NDArray":
+    vol = np.dstack(framestack)
+    vol = np.rollaxis(vol, -1)
     return vol
 
 
 def get_projection(vol, method='mean'):
     meth_map = {
-        'mean': lambda x: np.nanmean(x[0:, :, :], axis=0, dtype=np.int32),
+        'mean':
+        lambda x: np.nanmean(np.int32(x)[0:, :, :], axis=0, dtype=np.int32),
         'med': lambda x: np.nanmedian(x[0:, :, :], axis=0),
         'max': lambda x: np.nanmax(x[0:, :, :], axis=0),
-        'sum': lambda x: np.nansum(x[0:, :, :], axis=0, dtype=np.int32),
+        'sum':
+        lambda x: np.nansum(np.int32(x)[0:, :, :], axis=0, dtype=np.int32),
     }
-    img = np.int32(vol)
-    proj = meth_map[method](img)
+    proj = meth_map[method](vol)
+    # fig, ax = plt.subplots()
+    # ax.hist(proj.ravel(), bins=256, range=(0, 256))
     proj = np.clip(proj, 0, 65535)
+    # ax.hist(proj.ravel(), bins=256, range=(0, 256))
+    # ax.set_yscale('log')
+    # plt.show()
     return np.uint16(proj)
 
 
@@ -90,18 +105,13 @@ def offset_projection(proj, new_0):
     return offset_proj
 
 
-def write_proj(proj, path: Path, filename, ext='.tif'):
-    outpath = path / f"{filename}{ext}"
-    cv2.imwrite(outpath.as_posix(), proj)
-
-
 def get_max(data, saturated: int = 0.2):
     perc = 100 - saturated
     result = np.percentile(np.ravel(data), perc, interpolation='nearest')
     return result
 
 
-def identify_foreground(img):
+def identify_20X_foreground(img, **kwargs):
     blur = cv2.GaussianBlur(img, (7, 7), 0)
     max_val = get_max(blur, saturated=70)
     blur = np.clip(blur, 0, max_val)
@@ -122,18 +132,49 @@ def identify_foreground(img):
     thresh = cv2.dilate(thresh,
                         kernel,
                         iterations=5 * int(max(img.shape) / 512))
+    fig, ax = thresh_plot(thresh, kwargs['label'])
+    return thresh
+
+
+def identify_4X_foreground(img, **kwargs):
+    blur = cv2.GaussianBlur(img, (7, 7), 0)
+    max_val = get_max(blur, saturated=20)
+    blur = np.clip(blur, 0, max_val)
+    thresh = cv2.normalize(blur,
+                           None,
+                           0,
+                           255,
+                           cv2.NORM_MINMAX,
+                           dtype=cv2.CV_8U)
+    thresh = cv2.adaptiveThreshold(thresh, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY, 7, 1)
+    kernel = np.ones((5, 5), np.uint8)
+    thresh = cv2.erode(thresh, kernel, iterations=1)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+    kernel = np.ones((10, 10), np.uint8)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+    kernel = np.ones((2, 2), np.uint8)
+    thresh = cv2.dilate(thresh,
+                        kernel,
+                        iterations=5 * int(max(img.shape) / 512))
+    # fig, ax = thresh_plot(thresh, kwargs['label'])
+
     return thresh
 
 
 ##Main data analysis pipeline
-def analyze_fstack(vol, proj_type, offset=True):
-
+def analyze_fstack(vol, proj_type, offset=True, **kwargs):
+    try:
+        label = kwargs['label']
+    except KeyError:
+        label = ''
     proj = get_projection(vol, proj_type)
     if not offset:
         return proj, ()
     # frame = normalize_frame(proj)
 
-    mask_fg = identify_foreground(proj)
+    mask_fg = identify_20X_foreground(proj, **{'label': label})
+    # mask_fg = identify_4X_foreground(proj, **{'label': label})
 
     mask_bg = cv2.bitwise_not(mask_fg)
     mask16_fg = cv2.normalize(mask_fg,

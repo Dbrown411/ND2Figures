@@ -33,8 +33,9 @@ class ND2Accumulator:
 
     def set_sample_name(self, pattern):
         identifier_slice = self.identify if self.identify is not None else self.groupby if self.groupby is not None else (
-            0, -1)
-        sample_id = pattern[identifier_slice[0]:identifier_slice[1]]
+            0, None)
+        sublist = slice(identifier_slice[0], identifier_slice[1], 1)
+        sample_id = pattern[sublist]
         self.name = "_".join(sample_id)
 
     def standardize_channels(self, channels_dict):
@@ -71,7 +72,8 @@ class ND2Accumulator:
         for f in grouped_images:
             try:
                 with ND2Reader(f.as_posix()) as images:
-                    channels = images.metadata['channels']
+                    metadata = images.metadata.copy()
+                    channels = metadata['channels']
                     numChannels = len(channels)
                     set_axes_to_iterate(images)
                     channels_dict = {
@@ -83,7 +85,7 @@ class ND2Accumulator:
             except Exception as e:
                 print(e)
                 continue
-            collected_channels_dicts.append((images.metadata, channels_dict))
+            collected_channels_dicts.append((metadata, channels_dict))
         return collected_channels_dicts
 
     def merge_files(self, collected_channels_dicts):

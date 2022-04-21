@@ -9,19 +9,23 @@ class ConfigContainer:
     laptop = Path(rf"C:\Users\dillo\OneDrive\Desktop\OneDrive Backup")
     ihc_dir = laptop / "Thesis/Data/IHC"
 
-    groupby_slice = (0, 14)
-    identifier_slice = (0, 14)
+    groupby_slice = (0, -1)
+    identifier_slice = (0, -1)
 
     calc_proj = True
     create_fig = True
-    compile_all = True
 
-    export_flags = {'raw': True, 'proj': True, 'figure': True, 'offset': True}
+    export_flags = {
+        'raw': True,
+        'proj': calc_proj,
+        'figure': create_fig,
+        'offset': True
+    }
 
     channel_to_proj_map = {
         '405': 'max',
         '488': 'mean',
         '561': 'mean',
-        '640': 'mean'
+        '640': 'max'
     }
     show_progress = True

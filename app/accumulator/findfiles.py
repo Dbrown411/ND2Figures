@@ -7,6 +7,7 @@ import attr
 
 @attr.s(slots=True, kw_only=True)
 class ExportLocation:
+    parent: Path = attr.ib(default='')
     raw: Path = attr.ib(default='')
     proj: Path = attr.ib(default='')
     fig: Path = attr.ib(default='')
@@ -20,6 +21,7 @@ def create_folders(folder: Path,
     output_folder = folder / "Output"
 
     paths = ExportLocation(
+        parent=output_folder,
         raw=output_folder / "RawTifStacks" if export_flags['raw'] else '',
         proj=output_folder /
         "16bitProjections" if export_flags['proj'] else '',
@@ -28,10 +30,12 @@ def create_folders(folder: Path,
         "OffsetCorrection" if export_flags['offset'] else '',
     )
 
-    for _, p in attr.asdict(paths).items():
+    for k, p in attr.asdict(paths).items():
+        if k == 'parent':
+            continue
         if p != '':
             try:
-                p.mkdir()
+                p.mkdir(parents=True)
             except FileExistsError:
                 if clear:
                     for file in os.scandir(p.as_posix()):
@@ -74,14 +78,14 @@ def scan_data(datapath: Path):
 
 
 def match_scans(folder: Path, groupby=(0, 2)):
-    nd2Files = list(folder.glob('*.nd2'))
     normalize = lambda x: str(x).replace(' ', '').upper()
     tokenize = lambda x: r.split(r'-|_|\.', normalize(x.stem))
-
     keyfunc = lambda x: tokenize(x)[groupby[0]:groupby[1]]
 
+    nd2Files = list(folder.glob('*.nd2'))
+
     if groupby is None:
-        return [(tokenize(file), file) for file in nd2Files]
+        return [(tokenize(file), file.parent, [file]) for file in nd2Files]
     grouped = it.groupby(sorted(nd2Files, key=keyfunc), key=keyfunc)
     out = []
     for k, g in grouped:
